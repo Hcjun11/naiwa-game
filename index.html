@@ -1,0 +1,478 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="format-detection" content="telephone=no" />
+  <meta name="theme-color" content="#FFC93C" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="description" content="《奶娃》跑酷 × 2048 合成 —— 边躲避边合成，轻松上手的短局挑战" />
+  <title>奶娃 · 跑酷 × 2048 合成</title>
+  <link rel="stylesheet" href="css/style.css" />
+  <link rel="icon" type="image/png" href="favicon.png" />
+  <meta property="og:type" content="website" />
+  <meta property="og:title" content="《奶娃》跑酷 × 2048 合成" />
+  <meta property="og:description" content="轻松上手 · 策略合成 · 短局挑战：单指左右换道，收集数字方块自动合成，边躲避边冲高分！" />
+  <meta property="og:image" content="https://hcjun11.github.io/naiwa-game/assets/icon.png" />
+  <meta property="og:url" content="https://hcjun11.github.io/naiwa-game/" />
+  <meta name="twitter:card" content="summary_large_image" /></head>
+<body>
+<!-- =====================================================================
+     舞台：#stage 固定逻辑分辨率 540×960，缩放由 js/ui.js 计算（transform:scale）
+     结构：canvas#game（游戏世界） → #hud（游戏 HUD） → 各屏幕 → 浮层
+     ===================================================================== -->
+<div id="stage" class="stage">
+
+  <canvas id="game" width="540" height="960" aria-label="游戏画面"></canvas>
+
+  <!-- ============================= HUD ============================= -->
+  <div id="hud" class="hud" aria-hidden="true">
+    <!-- 左上：分数 / 心 / 最佳 -->
+    <div class="hud-score-card" id="hud-score-card">
+      <div class="hud-score-top">
+        <span class="hud-score-label">分数</span>
+        <span class="hud-hearts" id="hud-hearts"></span>
+      </div>
+      <div class="hud-score" id="hud-score">0</div>
+      <div class="hud-best" id="hud-best">最佳 0</div>
+    </div>
+
+    <!-- 顶部中央：模式 + 距离 -->
+    <div class="hud-mode-chip" id="hud-mode-chip">
+      <span class="hud-mode-name" id="hud-mode-name">无尽模式</span>
+      <span class="hud-mode-dot"></span>
+      <span class="hud-distance" id="hud-distance">0 m</span>
+    </div>
+
+    <!-- 顶部中央：冲刺倒计时（仅冲刺模式） -->
+    <div class="hud-timer" id="hud-timer" hidden>
+      <span class="hud-timer-num" id="hud-timer-num">60</span>
+      <span class="hud-timer-unit">s</span>
+      <span class="hud-timer-bar"><i id="hud-timer-fill"></i></span>
+    </div>
+
+    <!-- 右上：暂停 / 金币 / 本局最高方块 -->
+    <button class="hud-pause" id="hud-pause" type="button" aria-label="暂停">
+      <i></i><i></i>
+    </button>
+    <div class="hud-coin" id="hud-coin-pill">
+      <span class="ico-coin"></span>
+      <span id="hud-coins">0</span>
+    </div>
+    <div class="hud-max-badge" id="hud-max-badge" hidden>
+      <span class="hud-max-label">最高</span>
+      <span class="hud-max-tile" id="hud-max-tile">0</span>
+    </div>
+
+    <!-- 左侧：道具剩余时间条 -->
+    <div class="hud-powerups" id="hud-powerups"></div>
+
+    <!-- 中部：连击提示 -->
+    <div class="hud-combo" id="hud-combo" hidden>
+      <span class="hud-combo-x" id="hud-combo-x">×2</span>
+      <span class="hud-combo-label">连击</span>
+    </div>
+
+    <!-- HUD 特效层（漂浮文字等） -->
+    <div class="hud-fx" id="hud-fx"></div>
+
+    <!-- 底部：5 格合成槽 -->
+    <div class="hud-rack">
+      <div class="rack-head">
+        <span class="rack-title">合成槽</span>
+        <span class="rack-hint">同数自动合成</span>
+        <span class="rack-runcoins" id="hud-runcoins">本局 +0</span>
+      </div>
+      <div class="rack-slots" id="hud-rack"></div>
+    </div>
+  </div>
+
+  <!-- ============================ 屏幕 ============================ -->
+
+  <!-- 启动 -->
+  <section id="screen-boot" class="screen screen--boot is-active" data-screen="boot" aria-hidden="false">
+    <div class="boot-inner">
+      <div class="boot-logo" role="img" aria-label="奶娃">
+        <svg class="boot-logo-svg" viewBox="0 0 424 132" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false">
+          <defs>
+            <linearGradient id="bootLogoGrad" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0" stop-color="#FFE98A" />
+              <stop offset="0.48" stop-color="#FFCB3D" />
+              <stop offset="1" stop-color="#FFAE1F" />
+            </linearGradient>
+          </defs>
+          <text x="212" y="108" text-anchor="middle" font-family="'Microsoft YaHei', 'PingFang SC', sans-serif" font-size="100" font-weight="900" letter-spacing="2" fill="url(#bootLogoGrad)" stroke="#FFFDF5" stroke-width="10" stroke-linejoin="round" paint-order="stroke fill" style="filter: drop-shadow(0 7px 0 #C97A1E) drop-shadow(0 14px 20px rgba(150,90,10,.3));">奶娃</text>
+        </svg>
+      </div>
+      <div class="boot-sub">跑酷 × 2048 合成</div>
+      <div class="boot-spinner"><i></i></div>
+      <div class="boot-tip">正在准备糖果赛道…</div>
+      <div class="boot-version" id="boot-version">v0.9.0-demo</div>
+    </div>
+  </section>
+
+  <!-- 主菜单 -->
+  <section id="screen-menu" class="screen screen--menu" data-screen="menu" aria-hidden="true">
+    <div class="menu-bg" aria-hidden="true">
+      <span class="menu-blob menu-blob--1"></span>
+      <span class="menu-blob menu-blob--2"></span>
+      <span class="menu-blob menu-blob--3"></span>
+      <span class="menu-ray"></span>
+    </div>
+
+    <div class="menu-topbar">
+      <div class="pill pill--coin" title="金币">
+        <span class="ico-coin"></span>
+        <span id="menu-coins">0</span>
+      </div>
+      <div class="pill pill--best" title="历史最佳分">
+        <span class="ico-star"></span>
+        <span class="pill-label">最佳</span>
+        <span id="menu-best">0</span>
+      </div>
+    </div>
+
+    <div class="menu-hero">
+      <div class="menu-kicker"><i></i>轻松上手 · 策略合成 · 短局挑战<i></i></div>
+      <h1 class="menu-title" aria-label="《奶娃》">
+        <svg class="menu-title-svg" viewBox="0 0 424 132" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false">
+          <defs>
+            <linearGradient id="menuTitleGrad" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0" stop-color="#FFE98A" />
+              <stop offset="0.48" stop-color="#FFCB3D" />
+              <stop offset="1" stop-color="#FFAE1F" />
+            </linearGradient>
+          </defs>
+          <text x="212" y="108" text-anchor="middle" font-family="'Microsoft YaHei', 'PingFang SC', sans-serif" font-size="100" font-weight="900" letter-spacing="2" fill="url(#menuTitleGrad)" stroke="#FFFDF5" stroke-width="10" stroke-linejoin="round" paint-order="stroke fill" style="filter: drop-shadow(0 7px 0 #C97A1E) drop-shadow(0 14px 20px rgba(150,90,10,.3));">《奶娃》</text>
+        </svg>
+      </h1>
+      <div class="menu-subtitle">跑酷 <span class="x">×</span> <span class="hl">2048</span> 合成</div>
+    </div>
+
+    <!-- keyart：assets/keyart.webp 由美术队友产出；未就绪时用 CSS 奶娃兜底 -->
+    <div class="menu-art" id="menu-art">
+      <span class="menu-art-glow"></span>
+      <span class="menu-art-glow menu-art-glow--inner"></span>
+      <div class="nw-doll nw-doll--hero" style="--s:2.3;--hi:#FFE07A;--body:#FFC53D;--body2:#F0A81F;--belly:#FFF3D1;--belly2:#F7E2AE;--limb:#6A4A32;--cheek:#FF9E7A;--eye:#3A2418;--mouth:#5A2A1E;">
+        <span class="doll-arm doll-arm--l"></span>
+        <span class="doll-arm doll-arm--r"></span>
+        <span class="doll-leg doll-leg--l"></span>
+        <span class="doll-leg doll-leg--r"></span>
+        <span class="doll-body">
+          <span class="doll-belly"></span>
+          <span class="doll-eye doll-eye--l"></span>
+          <span class="doll-eye doll-eye--r"></span>
+          <span class="doll-cheek doll-cheek--l"></span>
+          <span class="doll-cheek doll-cheek--r"></span>
+          <span class="doll-mouth"></span>
+        </span>
+      </div>
+      <img id="menu-keyart-img" class="menu-art-img" src="assets/keyart.webp" alt="奶娃" draggable="false" />
+    </div>
+
+    <!-- 漂浮数字方块装饰 -->
+    <div class="menu-tiles" aria-hidden="true">
+      <span class="float-tile ft-1" style="--a1:#FFF4C8;--a2:#FFE08A;--tc:#7A4E00;">2</span>
+      <span class="float-tile ft-2" style="--a1:#FFE08A;--a2:#FFC94D;--tc:#7A4E00;">4</span>
+      <span class="float-tile ft-3" style="--a1:#FFD25C;--a2:#FFB020;--tc:#5C3A00;">8</span>
+      <span class="float-tile ft-4" style="--a1:#FFBE45;--a2:#FF8F1A;--tc:#4A2A00;">16</span>
+      <span class="float-tile ft-5" style="--a1:#FF9C45;--a2:#FF6B28;--tc:#FFFFFF;">32</span>
+    </div>
+
+    <div class="menu-actions">
+      <button class="btn btn--xl btn--primary menu-start" id="btn-start-endless" data-action="start-endless" type="button">
+        <span class="btn-main">无尽模式</span>
+        <span class="btn-sub">开始跑酷 · 一路向前</span>
+      </button>
+      <button class="btn btn--lg btn--coral menu-sprint" id="btn-start-sprint" data-action="start-sprint" type="button">
+        <span class="btn-main">限时冲刺</span>
+        <span class="menu-sprint-badge">60s</span>
+      </button>
+      <div class="menu-nav">
+        <button class="nav-btn nav-btn--shop" data-action="shop" type="button">
+          <span class="nav-dot"></span><span class="nav-label">商店</span>
+        </button>
+        <button class="nav-btn nav-btn--board" data-action="leaderboard" type="button">
+          <span class="nav-dot"></span><span class="nav-label">排行榜</span>
+        </button>
+        <button class="nav-btn nav-btn--settings" data-action="settings" type="button">
+          <span class="nav-dot"></span><span class="nav-label">设置</span>
+        </button>
+      </div>
+    </div>
+
+    <div class="menu-hint">
+      <span class="keycap">←</span><span class="keycap">→</span>
+      <span class="hint-text">或 <b>手指滑动</b> 换道 · 收集同数方块自动合成</span>
+    </div>
+  </section>
+
+  <!-- 暂停 -->
+  <section id="screen-paused" class="screen screen--modal" data-screen="paused" aria-hidden="true">
+    <div class="modal-dim"></div>
+    <div class="panel pause-panel">
+      <div class="pause-ico"><i></i><i></i></div>
+      <h2 class="panel-title">已暂停</h2>
+      <p class="panel-sub">奶娃在原地等你回来～</p>
+      <div class="pause-stats">
+        <div class="pstat"><span class="pstat-k">分数</span><span class="pstat-v" id="pause-score">0</span></div>
+        <div class="pstat"><span class="pstat-k">距离</span><span class="pstat-v" id="pause-distance">0 m</span></div>
+        <div class="pstat"><span class="pstat-k">模式</span><span class="pstat-v" id="pause-mode">无尽</span></div>
+      </div>
+      <button class="btn btn--xl btn--primary" id="btn-resume" type="button">继续游戏</button>
+      <button class="btn btn--lg btn--cream" id="btn-pause-restart" type="button">重新开始</button>
+      <button class="btn btn--lg btn--ghost" id="btn-pause-quit" type="button">结束本局</button>
+    </div>
+  </section>
+
+  <!-- 结算 -->
+  <section id="screen-gameover" class="screen screen--modal" data-screen="gameover" aria-hidden="true">
+    <div class="modal-dim"></div>
+    <div class="panel go-panel">
+      <div class="go-burst" id="go-burst" hidden></div>
+      <div class="go-head">
+        <span class="go-badge" id="go-badge">本局结束</span>
+        <h2 class="go-title" id="go-title">跑完啦！</h2>
+        <div class="go-record" id="go-record" hidden>
+          <span class="ico-star"></span> 新纪录！
+        </div>
+      </div>
+      <div class="go-score-wrap">
+        <div class="go-score-label">本局得分</div>
+        <div class="go-score" id="go-score">0</div>
+      </div>
+      <div class="go-stats">
+        <div class="go-stat"><span class="go-stat-k">距离</span><span class="go-stat-v" id="go-distance">0 m</span></div>
+        <div class="go-stat"><span class="go-stat-k">最高方块</span><span class="go-stat-v" id="go-maxtile">-</span></div>
+        <div class="go-stat"><span class="go-stat-k">最佳分</span><span class="go-stat-v" id="go-best">0</span></div>
+        <div class="go-stat"><span class="go-stat-k">合成次数</span><span class="go-stat-v" id="go-merges">0</span></div>
+      </div>
+      <div class="go-coins" id="go-coins-row">
+        <span class="ico-coin"></span>
+        <span class="go-coins-label">本局金币</span>
+        <span class="go-coins-val" id="go-coins">0</span>
+        <span class="go-coins-bonus" id="go-coins-bonus" hidden>已双倍 ×2</span>
+      </div>
+      <div class="go-actions">
+        <div class="go-ad-row">
+          <button class="btn btn--lg btn--mint" id="btn-revive" type="button">
+            <span class="btn-main">复活继续</span>
+            <span class="btn-sub">看广告</span>
+          </button>
+          <button class="btn btn--lg btn--gold" id="btn-ad-double" type="button">
+            <span class="btn-main">金币 ×2</span>
+            <span class="btn-sub">看广告</span>
+          </button>
+        </div>
+        <button class="btn btn--xl btn--primary" id="btn-restart" type="button">再来一局</button>
+        <button class="btn btn--lg btn--ghost" id="btn-home" type="button">返回主页</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- 商店 -->
+  <section id="screen-shop" class="screen screen--page" data-screen="shop" aria-hidden="true">
+    <header class="page-head">
+      <button class="back-btn" id="btn-shop-back" type="button" aria-label="返回">←</button>
+      <div class="page-title-wrap">
+        <h2 class="page-title">奶娃商店</h2>
+        <div class="page-sub">换个外观，换条赛道</div>
+      </div>
+      <div class="pill pill--coin"><span class="ico-coin"></span><span id="shop-coins">0</span></div>
+    </header>
+    <div class="tabs" id="shop-tabs" role="tablist">
+      <button class="tab is-active" data-tab="skin" type="button" role="tab">外观</button>
+      <button class="tab" data-tab="theme" type="button" role="tab">主题</button>
+      <span class="tab-glider" id="shop-tab-glider"></span>
+    </div>
+    <div class="shop-scroll">
+      <div class="shop-grid" id="shop-grid"></div>
+      <p class="shop-foot">金币可通过跑酷、合成新高与结算获得</p>
+    </div>
+  </section>
+
+  <!-- 排行榜 -->
+  <section id="screen-leaderboard" class="screen screen--page" data-screen="leaderboard" aria-hidden="true">
+    <header class="page-head">
+      <button class="back-btn" id="btn-lb-back" type="button" aria-label="返回">←</button>
+      <div class="page-title-wrap">
+        <h2 class="page-title">排行榜</h2>
+        <div class="page-sub">本地榜单 · 挑战最高分</div>
+      </div>
+      <div class="pill pill--best"><span class="ico-star"></span><span id="lb-best">0</span></div>
+    </header>
+    <div class="tabs" id="lb-tabs" role="tablist">
+      <button class="tab is-active" data-mode="endless" type="button" role="tab">无尽模式</button>
+      <button class="tab" data-mode="sprint" type="button" role="tab">限时冲刺</button>
+      <span class="tab-glider" id="lb-tab-glider"></span>
+    </div>
+    <div class="lb-scroll">
+      <div class="lb-list" id="lb-list"></div>
+      <div class="lb-self-card" id="lb-self"></div>
+    </div>
+  </section>
+
+  <!-- 设置 -->
+  <section id="screen-settings" class="screen screen--page" data-screen="settings" aria-hidden="true">
+    <header class="page-head">
+      <button class="back-btn" id="btn-settings-back" type="button" aria-label="返回">←</button>
+      <div class="page-title-wrap">
+        <h2 class="page-title">设置</h2>
+        <div class="page-sub">声音、昵称与存档</div>
+      </div>
+      <div class="pill pill--coin"><span class="ico-coin"></span><span id="settings-coins">0</span></div>
+    </header>
+    <div class="settings-scroll">
+      <div class="panel set-group">
+        <div class="set-group-title">声音与震动</div>
+        <div class="set-row">
+          <div class="set-label"><b>音效</b><span>按钮、收集与合成音效</span></div>
+          <button class="switch is-on" data-setting="sfx" role="switch" aria-checked="true" type="button"><i></i></button>
+        </div>
+        <div class="set-row">
+          <div class="set-label"><b>音乐</b><span>轻快的循环背景音乐</span></div>
+          <button class="switch is-on" data-setting="music" role="switch" aria-checked="true" type="button"><i></i></button>
+        </div>
+        <div class="set-row">
+          <div class="set-label"><b>震动</b><span>受击与合成时轻微反馈</span></div>
+          <button class="switch is-on" data-setting="haptics" role="switch" aria-checked="true" type="button"><i></i></button>
+        </div>
+      </div>
+
+      <div class="panel set-group">
+        <div class="set-group-title">玩家信息</div>
+        <div class="set-row set-row--nick">
+          <div class="set-label"><b>昵称</b><span>排行榜显示名称，最多 12 个字</span></div>
+          <div class="nick-edit">
+            <input id="nickname-input" class="nick-input" type="text" maxlength="12" autocomplete="off" spellcheck="false" placeholder="奶娃玩家" />
+            <button class="btn btn--sm btn--primary" id="btn-nick-save" type="button">保存</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel set-group">
+        <div class="set-group-title">玩法与存档</div>
+        <button class="set-link" id="btn-howto" type="button">
+          <span class="set-link-ico">?</span>
+          <span class="set-link-text"><b>玩法说明</b><span>三步学会跑酷 × 合成</span></span>
+          <span class="set-link-arrow">›</span>
+        </button>
+        <button class="set-link set-link--danger" id="btn-reset" type="button">
+          <span class="set-link-ico">↺</span>
+          <span class="set-link-text"><b>重置存档</b><span>清空金币、外观与排行榜记录</span></span>
+          <span class="set-link-arrow">›</span>
+        </button>
+        <div class="reset-confirm" id="reset-confirm" hidden>
+          <p>确定要清空所有进度吗？此操作不可撤销。</p>
+          <div class="reset-confirm-actions">
+            <button class="btn btn--md btn--cream" id="btn-reset-cancel" type="button">取消</button>
+            <button class="btn btn--md btn--coral" id="btn-reset-ok" type="button">确定重置</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="set-version" id="set-version">《奶娃》 v0.9.0-demo · 本地离线存档</div>
+    </div>
+  </section>
+
+  <!-- ============================ 浮层 ============================ -->
+
+  <!-- 倒计时 -->
+  <div class="layer layer--countdown" id="countdown-layer" aria-hidden="true"></div>
+
+  <!-- 横幅 -->
+  <div class="layer layer--banner" id="banner-layer" aria-hidden="true"></div>
+
+  <!-- Toast -->
+  <div class="layer layer--toast" id="toast-layer" aria-hidden="true"></div>
+
+  <!-- 教程 -->
+  <div class="overlay overlay--tutorial" id="overlay-tutorial" aria-hidden="true">
+    <div class="modal-dim"></div>
+    <div class="panel tut-panel">
+      <div class="tut-head">
+        <span class="tut-badge">新手教程</span>
+        <h2 class="panel-title">三步玩转奶娃</h2>
+        <p class="panel-sub">滑动换道，边跑边合成，冲击更高数值</p>
+      </div>
+      <ol class="tut-steps">
+        <li class="tut-step">
+          <div class="tut-ico tut-ico--swipe"><span>←</span><span>→</span></div>
+          <div class="tut-text"><b>左右滑动 换道</b><p>手指滑一下，或用键盘 ← → / A D</p></div>
+        </li>
+        <li class="tut-step">
+          <div class="tut-ico tut-ico--merge">
+            <span class="mini-tile" style="--a1:#FFF4C8;--a2:#FFE08A;--tc:#7A4E00;">2</span>
+            <span class="mini-tile" style="--a1:#FFF4C8;--a2:#FFE08A;--tc:#7A4E00;">2</span>
+            <span class="mini-eq">=</span>
+            <span class="mini-tile" style="--a1:#FFE08A;--a2:#FFC94D;--tc:#7A4E00;">4</span>
+          </div>
+          <div class="tut-text"><b>收集同数 自动合成</b><p>撞到数字方块即收集，两个相同数字合成翻倍</p></div>
+        </li>
+        <li class="tut-step">
+          <div class="tut-ico tut-ico--avoid"><span class="warn-tri">!</span></div>
+          <div class="tut-text"><b>躲避障碍 保住小心心</b><p>木箱、岩石、木桶会扣 1 颗心，3 颗心耗尽就结束</p></div>
+        </li>
+      </ol>
+      <button class="btn btn--xl btn--primary" id="btn-tut-ok" type="button">开始奶娃之旅</button>
+      <button class="tut-skip" id="btn-tut-close" type="button">我知道了</button>
+    </div>
+  </div>
+
+  <!-- 模拟激励广告 -->
+  <div class="overlay overlay--ad" id="overlay-ad" aria-hidden="true">
+    <div class="modal-dim modal-dim--dark"></div>
+    <div class="ad-card">
+      <div class="ad-ribbon">模拟激励广告</div>
+      <div class="ad-stage" aria-hidden="true">
+        <span class="ad-bubble ad-bubble--1"></span>
+        <span class="ad-bubble ad-bubble--2"></span>
+        <span class="ad-tile ad-tile--1">2</span>
+        <span class="ad-tile ad-tile--2">4</span>
+        <span class="ad-tile ad-tile--3">8</span>
+        <div class="nw-doll nw-doll--ad" style="--s:1.25;--hi:#FFE07A;--body:#FFC53D;--body2:#F0A81F;--belly:#FFF3D1;--belly2:#F7E2AE;--limb:#6A4A32;--cheek:#FF9E7A;--eye:#3A2418;--mouth:#5A2A1E;">
+          <span class="doll-arm doll-arm--l"></span>
+          <span class="doll-arm doll-arm--r"></span>
+          <span class="doll-leg doll-leg--l"></span>
+          <span class="doll-leg doll-leg--r"></span>
+          <span class="doll-body">
+            <span class="doll-belly"></span>
+            <span class="doll-eye doll-eye--l"></span>
+            <span class="doll-eye doll-eye--r"></span>
+            <span class="doll-cheek doll-cheek--l"></span>
+            <span class="doll-cheek doll-cheek--r"></span>
+            <span class="doll-mouth"></span>
+          </span>
+        </div>
+      </div>
+      <div class="ad-title" id="ad-title">看广告复活</div>
+      <div class="ad-note">Demo 内的模拟流程，不联网、无真实广告</div>
+      <div class="ad-progress"><i id="ad-progress-fill"></i></div>
+      <div class="ad-timer" id="ad-timer">2.2s</div>
+      <button class="btn btn--lg btn--primary" id="btn-ad-claim" type="button" disabled><span id="ad-claim-text">奖励准备中…</span></button>
+    </div>
+  </div>
+
+</div><!-- /#stage -->
+
+<!-- =====================================================================
+     脚本加载顺序（SPEC 2.2，严格顺序、无 defer/async）
+     ===================================================================== -->
+<script src="js/config.js"></script>
+<script src="js/util.js"></script>
+<script src="js/save.js"></script>
+<script src="js/core/merge.js"></script>
+<script src="js/core/spawner.js"></script>
+<script src="js/core/run.js"></script>
+<script src="js/art/character.js"></script>
+<script src="js/art/world.js"></script>
+<script src="js/art/fx.js"></script>
+<script src="js/audio.js"></script>
+<script src="js/ui.js"></script>
+<script src="js/game.js"></script>
+<script src="js/main.js"></script>
+</body>
+</html>
+
+
