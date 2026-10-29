@@ -166,6 +166,7 @@
     el.hudBest = $('hud-best');
     el.modeName = $('hud-mode-name');
     el.distance = $('hud-distance');
+    el.hudSpeed = $('hud-speed');
     el.timer = $('hud-timer');
     el.timerNum = $('hud-timer-num');
     el.timerFill = $('hud-timer-fill');
@@ -218,6 +219,7 @@
     el.lbList = $('lb-list');
     el.lbSelf = $('lb-self');
     el.lbBest = $('lb-best');
+    el.lbStatus = $('lb-status');
 
     el.settingsCoins = $('settings-coins');
     el.nickInput = $('nickname-input');
@@ -276,6 +278,7 @@
     try {
       if (!el.stage) cacheEls();
       name = String(name || 'menu');
+      stopLeaderboardPolling();
 
       if (name === 'playing') {
         var fromPaused = state.screen === 'paused';
@@ -315,6 +318,7 @@
         UI.refreshShop();
       } else if (name === 'leaderboard') {
         UI.refreshLeaderboard(state.boardMode);
+        startLeaderboardPolling();
       } else if (name === 'settings') {
         UI.refreshSettings();
       }
@@ -666,6 +670,12 @@
       if (dist !== hudCache.distance) {
         hudCache.distance = dist;
         setText(el.distance, dist + ' m');
+      }
+      /* ---- 速度（随时间加速，实时刷新） ---- */
+      var spdTxt = (Math.round((view.speed || 0) * 10) / 10).toFixed(1) + ' m/s';
+      if (spdTxt !== hudCache.speedTxt) {
+        hudCache.speedTxt = spdTxt;
+        setText(el.hudSpeed, spdTxt);
       }
 
       /* ---- 金币（钱包 = 存档；本局 = view.coins） ---- */
@@ -1246,44 +1256,132 @@
     });
   }
 
-  /* ======================== 排行榜 ======================== */
+  /* ======================== 排行榜（在线实时 + 本地回退） ======================== */
+  var lbPollTimer = null;
+
+  function stopLeaderboardPolling() {
+    if (lbPollTimer) { clearInterval(lbPollTimer); lbPollTimer = null; }
+  }
+
+  function startLeaderboardPolling() {
+    stopLeaderboardPolling();
+    if (!NW.online || !NW.online.enabled) return;
+    var interval = (CFG.online && CFG.online.pollMs) || 8000;
+    lbPollTimer = setInterval(function () {
+      if (state.screen !== 'leaderboard') { stopLeaderboardPolling(); return; }
+      UI.refreshLeaderboard(state.boardMode);
+    }, interval);
+  }
+
+  function boardRowsOnline(m, myBest, tag) {
+    var list = [];
+    var online = [];
+    try { online = (NW.online && NW.online.enabled) ? (NW.online.getRows(m) || []) : []; } catch (e) { online = []; }
+    var useOnline = online.length > 0;
+    if (useOnline) {
+      for (var i = 0; i < online.length; i++) {
+        var e = online[i];
+        list.push({
+          name: e.name, score: e.score, self: !!(e.self || (tag && e.tag === tag)),
+          online: true, time: e.time
+        });
+      }
+    } else {
+      try { list = (S && S.board) ? S.board(m) : []; } catch (e2) { list = []; }
+    }
+    if (myBest > 0) {
+      var hasSelf = false;
+      for (var j = 0; j < list.length; j++) if (list[j].self) hasSelf = true;
+      if (!hasSelf) {
+        list.push({ name: (S && S.nickname) ? S.nickname() : '奶娃玩家', score: myBest, self: true, online: false });
+      }
+    }
+    list.sort(function (a, b) {
+      if (b.score !== a.score) return b.score - a.score;
+      if (a.self !== b.self) return a.self ? -1 : 1;
+      return 0;
+    });
+    for (var k = 0; k < list.length; k++) list[k].rank = k + 1;
+    var top = list.slice(0, 10);
+    var me = null;
+    for (var q = 0; q < list.length; q++) if (list[q].self) { me = list[q]; break; }
+    if (me && top.indexOf(me) < 0) top.push(me);
+    return top;
+  }
+
+  function renderBoardRows(rows, m, myBest) {
+    var html = '';
+    for (var i = 0; i < rows.length; i++) {
+      var r = rows[i] || {};
+      var rank = r.rank || (i + 1);
+      var rankCls = rank <= 3 ? ' medal-' + rank : '';
+      html += '<div class="lb-row' + (r.self ? ' is-self' : '') + '">' +
+        '<span class="lb-rank' + rankCls + '">' + rank + '</span>' +
+        '<span class="lb-name">' + (r.online ? '<span class="lb-online-dot" title="在线玩家"></span>' : '') +
+        esc(r.name || '奶娃玩家') + (r.self ? '<span class="lb-me-tag">我</span>' : '') + '</span>' +
+        '<span class="lb-score">' + fmt(r.score || 0) + '</span>' +
+        '</div>';
+    }
+    if (!rows.length) html = '<div class="lb-empty">还没有在线成绩，跑一局即可上榜～</div>';
+    setHtml(el.lbList, html);
+
+    var myRank = 0;
+    for (var j = 0; j < rows.length; j++) if (rows[j].self) { myRank = rows[j].rank || (j + 1); break; }
+    if (el.lbSelf) {
+      if (myRank > 0) {
+        el.lbSelf.innerHTML = '<div><div class="lb-self-label">我的排名</div>' +
+          '<div style="font-size:12px;font-weight:800;color:#a5764a;margin-top:2px;">最佳 ' + fmt(myBest) + ' 分</div></div>' +
+          '<div class="lb-self-rank">第 ' + myRank + ' 名</div>';
+      } else if (myBest > 0) {
+        el.lbSelf.innerHTML = '<div><div class="lb-self-label">我的最佳</div>' +
+          '<div style="font-size:12px;font-weight:800;color:#a5764a;margin-top:2px;">尚未进入前 10</div></div>' +
+          '<div class="lb-self-rank">' + fmt(myBest) + ' 分</div>';
+      } else {
+        el.lbSelf.innerHTML = '<div class="lb-self-empty">还没有成绩，快跑一局登上榜单吧！</div>';
+      }
+    }
+    setText(el.lbBest, fmt(myBest));
+    syncTabs(el.lbTabs, el.lbTabGlider, m === 'sprint' ? 1 : 0);
+  }
+
+  function renderLeaderboard(m) {
+    var myBest = 0, tag = '';
+    try {
+      myBest = (S && S.best) ? (S.best(m) || 0) : 0;
+      tag = (S && S.playerTag) ? S.playerTag() : '';
+    } catch (e) { }
+    var rows = boardRowsOnline(m, myBest, tag);
+    renderBoardRows(rows, m, myBest);
+    if (el.lbStatus) {
+      var onlineRows = [];
+      try { onlineRows = (NW.online && NW.online.enabled) ? (NW.online.getRows(m) || []) : []; } catch (e3) { onlineRows = []; }
+      var statusTxt;
+      if (onlineRows.length > 0) {
+        statusTxt = (NW.online && NW.online.statusText) ? NW.online.statusText() : '在线实时榜';
+      } else if (NW.online && NW.online.enabled) {
+        if (NW.online.state === 'loading') statusTxt = '在线实时榜 · 同步中…（本地回退）';
+        else if (NW.online.state === 'error') statusTxt = '本地榜单 · 在线服务暂不可用';
+        else statusTxt = '本地榜单 · 在线榜暂无成绩，跑一局上榜';
+      } else {
+        statusTxt = '本地榜单 · 挑战最高分';
+      }
+      setText(el.lbStatus, statusTxt);
+    }
+  }
+
   UI.refreshLeaderboard = function (mode) {
     try {
       if (mode === 'endless' || mode === 'sprint') state.boardMode = mode;
-      var m = state.boardMode;
-      var rows = [];
-      try { rows = (S && S.board) ? S.board(m) : []; } catch (e) { rows = []; }
-      var html = '';
-      for (var i = 0; i < rows.length; i++) {
-        var r = rows[i] || {};
-        var rank = r.rank || (i + 1);
-        var rankCls = rank <= 3 ? ' medal-' + rank : '';
-        html += '<div class="lb-row' + (r.self ? ' is-self' : '') + '">' +
-          '<span class="lb-rank' + rankCls + '">' + rank + '</span>' +
-          '<span class="lb-name">' + esc(r.name || '奶娃玩家') + (r.self ? '<span class="lb-me-tag">我</span>' : '') + '</span>' +
-          '<span class="lb-score">' + fmt(r.score || 0) + '</span>' +
-          '</div>';
+      var m = state.boardMode || 'endless';
+      renderLeaderboard(m);
+      if (NW.online && NW.online.enabled && NW.online.fetch) {
+        NW.online.fetch(m, false).then(function () {
+          if (state.screen === 'leaderboard' && state.boardMode === m) renderLeaderboard(m);
+        }).catch(function () { });
       }
-      setHtml(el.lbList, html);
-
-      var myRank = 0, myBest = 0;
-      try {
-        myRank = (S && S.playerRank) ? (S.playerRank(m) || 0) : 0;
-        myBest = (S && S.best) ? (S.best(m) || 0) : 0;
-      } catch (e2) { }
-      if (el.lbSelf) {
-        if (myRank > 0) {
-          el.lbSelf.innerHTML = '<div><div class="lb-self-label">我的排名</div>' +
-            '<div style="font-size:12px;font-weight:800;color:#a5764a;margin-top:2px;">最佳 ' + fmt(myBest) + ' 分</div></div>' +
-            '<div class="lb-self-rank">第 ' + myRank + ' 名</div>';
-        } else {
-          el.lbSelf.innerHTML = '<div class="lb-self-empty">还没有成绩，快跑一局登上榜单吧！</div>';
-        }
-      }
-      setText(el.lbBest, fmt(myBest));
-      syncTabs(el.lbTabs, el.lbTabGlider, m === 'sprint' ? 1 : 0);
     } catch (e) { warn('refreshLeaderboard', e); }
   };
+
 
   function switchBoardMode(mode) {
     if (mode !== 'endless' && mode !== 'sprint') return;
@@ -1314,7 +1412,7 @@
       }
       setText(el.settingsCoins, fmt(snap.coins || 0));
       if (el.setVersion) {
-        setText(el.setVersion, '《奶娃》 v' + (CFG.version || '0.9.0-demo') + ' · 本地离线存档');
+        setText(el.setVersion, '《奶娃》 v' + (CFG.version || '0.9.1-demo') + ' · 在线排行榜 · 本地存档');
       }
       updateCoinDisplays();
     } catch (e) { warn('refreshSettings', e); }
