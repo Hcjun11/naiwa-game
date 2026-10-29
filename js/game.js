@@ -25,6 +25,7 @@
   var camX = 0;
   var trauma = 0, traumaT = 0;
   var hitFlash = 0;
+  var lastSpeedMark = 0;
   var goTimer = 0;
   var lastCountdown = null;
   var pending = null;            // 结算前的暂存
@@ -148,6 +149,8 @@
     ui('setCoins', S.coins());
     ui('showScreen', 'menu');
     music('menu');
+    // 预热在线排行榜（不阻塞启动，失败静默）
+    if (NW.online && NW.online.prefetch) safe(function () { NW.online.prefetch(); });
     G.draw();
   };
 
@@ -173,6 +176,8 @@
     hitFlash = 0;
     goTimer = 0;
     lastCountdown = null;
+    var step0 = CFG.run.speedMilestone || 2;
+    lastSpeedMark = Math.floor((CFG.mode(modeId).speed.start || 6.2) / step0) * step0;
     if (fx) fx.reset();
     ui('showScreen', 'playing');
     ui('setCoins', S.coins());
@@ -237,6 +242,10 @@
     r.isNewRecord = rec.newRecord;
     r.adDoubleUsed = double;
     r.canRevive = false;
+    // 上报在线排行榜（失败静默降级为本地榜）
+    if (NW.online && NW.online.enabled && NW.online.submit) {
+      safe(function () { NW.online.submit(pending.mode, r.score); });
+    }
     return r;
   }
 
@@ -390,7 +399,7 @@
             sfx('hit');
             haptic(30);
             trauma = Math.min(1, trauma + 0.75);
-            hitFlash = 0.35;
+            hitFlash = 0.22;
             if (fx) fx.hit(ps.x, ps.y - ps.h * 0.5);
           }
           break;
@@ -530,6 +539,14 @@
       if (run && state === 'playing') {
         lastView = run.view();
         updateCountdown(lastView);
+        // 随时间加速：每跨过一档速度阈值给出提示
+        var stepSpd = CFG.run.speedMilestone || 2;
+        var mark = Math.floor((lastView.speed || 0) / stepSpd) * stepSpd;
+        if (mark > lastSpeedMark) {
+          lastSpeedMark = mark;
+          sfx('go');
+          ui('showBanner', '加速！', '速度提升至 ' + mark.toFixed(1) + ' m/s', { tone: 'gold', duration: 850, icon: 'power' });
+        }
         var p = lastView.player;
         camX = U.damp(camX, p.x * CFG.cam.followX, 9, dt);
         hudTick++;
@@ -616,36 +633,58 @@
     };
     if (NW.art.World.drawEntities) NW.art.World.drawEntities(ctx, sceneAhead);
 
-    // 玩家角色
+    // 玩家角色（受击不再闪烁，无敌期间保持正常显示，方便看清换道）
     var ps = playerScreen();
-    var invulnBlink = v.player.invuln > 0 && (Math.floor(gameTime * 14) % 2 === 0);
-    var alpha = invulnBlink ? 0.45 : 1;
+    var alpha = 1;
     if (NW.art.Character) {
       if (NW.art.Character.drawShadow) NW.art.Character.drawShadow(ctx, ps.x, ps.y, ps.h * 0.32, 0.22);
       var chState = 'run';
       if (v.player.hurt > 0.05) chState = 'hit';
-      else if (v.player.invuln > 0) chState = 'run';
       else if (v.combo >= 3) chState = 'happy';
       var chOpts = {
         x: ps.x, y: ps.y, h: ps.h, state: chState, t: gameTime,
         skin: skin, lean: v.player.tilt || 0, alpha: alpha,
-        blink: v.player.invuln > 0 ? 0 : undefined,
         squash: v.player.hurt > 0 ? Math.min(0.5, v.player.hurt) : 0
       };
       if (chState === 'run' && v.mode.phase === 'intro') chOpts.state = 'idle';
       NW.art.Character.draw(ctx, chOpts);
-      // 护盾泡泡
+      // 护盾效果：脚下光环 + 身体两侧弧线，不遮挡前方视野
       if (v.powerups && v.powerups.shield > 0) {
+        var pulse = 0.5 + 0.5 * Math.sin(gameTime * 5);
         ctx.save();
-        ctx.globalAlpha = 0.22 + 0.1 * Math.sin(gameTime * 6);
-        U.fillCircle(ctx, ps.x, ps.y - ps.h * 0.48, ps.h * 0.62, '#4FC3F7');
-        ctx.globalAlpha = 0.8;
+        ctx.lineCap = 'round';
+        // 脚下光环（椭圆，贴地）
+        ctx.globalAlpha = 0.35 + pulse * 0.2;
+        ctx.strokeStyle = '#8FE5FF';
         ctx.lineWidth = 3;
-        U.fillCircle(ctx, ps.x, ps.y - ps.h * 0.48, ps.h * 0.62, null);
-        ctx.strokeStyle = '#B3E9FF';
         ctx.beginPath();
-        ctx.arc(ps.x, ps.y - ps.h * 0.48, ps.h * 0.62, 0, Math.PI * 2);
+        ctx.ellipse(ps.x, ps.y - ps.h * 0.02, ps.h * 0.28, ps.h * 0.075, 0, 0, Math.PI * 2);
         ctx.stroke();
+        // 身体两侧短弧（只在角色两侧，不覆盖正前方）
+        ctx.globalAlpha = 0.45 + pulse * 0.2;
+        ctx.strokeStyle = '#B3E9FF';
+        ctx.lineWidth = 4;
+        var cy = ps.y - ps.h * 0.5;
+        var rr = ps.h * 0.34;
+        ctx.beginPath();
+        ctx.arc(ps.x, cy, rr, Math.PI * 0.78, Math.PI * 1.22);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(ps.x, cy, rr, Math.PI * 1.78, Math.PI * 0.22);
+        ctx.stroke();
+        // 头顶小盾牌标记（很小，不挡视野）
+        ctx.globalAlpha = 0.9;
+        ctx.fillStyle = '#E8FBFF';
+        var ix = ps.x, iy = ps.y - ps.h * 1.06;
+        ctx.beginPath();
+        ctx.moveTo(ix, iy - 7);
+        ctx.lineTo(ix + 6, iy - 3);
+        ctx.lineTo(ix + 5, iy + 3);
+        ctx.lineTo(ix, iy + 7);
+        ctx.lineTo(ix - 5, iy + 3);
+        ctx.lineTo(ix - 6, iy - 3);
+        ctx.closePath();
+        ctx.fill();
         ctx.restore();
       }
     }
@@ -678,9 +717,9 @@
     if (fx && state !== 'menu') fx.draw(ctx);
     ctx.restore();
 
-    // 受击红屏
+    // 受击红屏（弱化：只做轻微边缘红晕，不阻挡视线）
     if (hitFlash > 0) {
-      var a = Math.min(0.42, hitFlash * 0.9);
+      var a = Math.min(0.22, hitFlash * 0.55);
       var vg = ctx.createRadialGradient(CFG.W / 2, CFG.H / 2, CFG.H * 0.28, CFG.W / 2, CFG.H / 2, CFG.H * 0.72);
       vg.addColorStop(0, 'rgba(255,60,60,0)');
       vg.addColorStop(1, 'rgba(255,40,40,' + a + ')');
