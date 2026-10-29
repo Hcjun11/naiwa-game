@@ -1281,8 +1281,12 @@
     if (useOnline) {
       for (var i = 0; i < online.length; i++) {
         var e = online[i];
+        var isSelf = !!(e.self || (tag && e.tag === tag));
+        var scoreVal = e.score;
+        // 若本地最佳高于在线记录（例如在线功能上线前的最好成绩），以本地最佳展示
+        if (isSelf && myBest > scoreVal) scoreVal = myBest;
         list.push({
-          name: e.name, score: e.score, self: !!(e.self || (tag && e.tag === tag)),
+          name: e.name, score: scoreVal, self: isSelf,
           online: true, time: e.time
         });
       }
