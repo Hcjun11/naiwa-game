@@ -8,7 +8,7 @@
   var CFG = (NW.CFG = {});
 
   /* ---------- 基础信息 ---------- */
-  CFG.version = '0.9.0-demo';
+  CFG.version = '0.9.1-demo';
   CFG.title = '奶娃';
   CFG.subtitle = '跑酷 × 2048 合成';
   CFG.tagline = '轻松上手 · 策略合成 · 短局挑战';
@@ -49,13 +49,15 @@
       id: 'endless', name: '无尽模式', short: '无尽',
       desc: '一直向前跑，能跑多远就跑多远',
       duration: 0, scoreMul: 1, coinMul: 1,
-      speed: { start: 6.2, max: 17.5, accel: 0.12 }
+      // 速度随时间持续提升：约 60s 从 6.2 提升到满速 21.0 m/s
+      speed: { start: 6.2, max: 21.0, accel: 0.24 }
     },
     sprint: {
       id: 'sprint', name: '限时冲刺', short: '冲刺',
       desc: '60 秒内冲击最高分',
       duration: 60, scoreMul: 1.5, coinMul: 1.5,
-      speed: { start: 9.0, max: 16.0, accel: 0.10 }
+      // 冲刺模式起步更快、约 45s 达到 19.5 m/s
+      speed: { start: 9.0, max: 19.5, accel: 0.22 }
     }
   };
 
@@ -63,7 +65,9 @@
   CFG.run = {
     hearts: 3,
     laneSwitch: 0.13,        // 换道耗时（秒）
-    invuln: 1.5,             // 受击无敌时间
+    invuln: 1.5,             // 受击无敌时间（无敌期间可正常换道、不再闪烁）
+    hurtPoseTime: 0.4,       // 受击表情/挤压持续时间（表情结束即恢复跑步动作）
+    speedMilestone: 2.0,     // 速度每提升 2 m/s 弹出一次「加速」提示
     hurtSlowMul: 0.72,       // 受击瞬间减速倍率
     hurtSlowTime: 0.55,
     introTime: 2.4,          // 开局 3-2-1-GO 倒计时时长（两种模式一致）
@@ -256,6 +260,23 @@
   ];
 
   CFG.save = { key: 'naiwa_save_v1' };
+
+  /* ---------- 在线排行榜（ntfy.sh 公共 topic 作为无账号轻量后端） ----------
+   * 说明：ntfy.sh 公共服务器的 topic 消息缓存约 12 小时，客户端轮询聚合最近的成绩，
+   * 实现「打开排行榜即实时更新」；断网 / 服务不可用时自动回退到本地榜单。
+   * 只公开昵称与分数，不包含任何账号或设备信息。
+   */
+  CFG.online = {
+    enabled: true,
+    server: 'https://ntfy.sh',
+    topic: 'naiwa-runner-online-2b9e5d',
+    since: '12h',
+    pollMs: 8000,        // 排行榜打开时轮询间隔
+    timeoutMs: 6000,
+    maxRows: 10,
+    maxScore: 300000,    // 防脏数据：超过此分数的在线记录忽略
+    submitCooldownMs: 6000
+  };
 
   CFG.refs = {
     dir: 'assets/',
