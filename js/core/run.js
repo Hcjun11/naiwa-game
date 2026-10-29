@@ -413,7 +413,7 @@
     this.hearts -= 1;
     this.stats.hits += 1;
     p.invuln = CFG.run.invuln;
-    p.hurt = CFG.run.invuln;                 // 受击表情/挤压剩余秒（与无敌同步递减）
+    p.hurt = CFG.run.hurtPoseTime || 0.4;    // 受击表情只短暂播放，不再长时间闪烁
     this._hurtSlowTimer = CFG.run.hurtSlowTime;
     this._emit({ t: 'hit', heartsLeft: Math.max(0, this.hearts) });
 
