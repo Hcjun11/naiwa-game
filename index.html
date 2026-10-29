@@ -1,11 +1,10 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
   <meta name="format-detection" content="telephone=no" />
   <meta name="theme-color" content="#FFC93C" />
-  <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="description" content="《奶娃》跑酷 × 2048 合成 —— 边躲避边合成，轻松上手的短局挑战" />
   <title>奶娃 · 跑酷 × 2048 合成</title>
@@ -16,7 +15,9 @@
   <meta property="og:description" content="轻松上手 · 策略合成 · 短局挑战：单指左右换道，收集数字方块自动合成，边躲避边冲高分！" />
   <meta property="og:image" content="https://hcjun11.github.io/naiwa-game/assets/icon.png" />
   <meta property="og:url" content="https://hcjun11.github.io/naiwa-game/" />
-  <meta name="twitter:card" content="summary_large_image" /></head>
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="mobile-web-app-capable" content="yes" />
+</head>
 <body>
 <!-- =====================================================================
      舞台：#stage 固定逻辑分辨率 540×960，缩放由 js/ui.js 计算（transform:scale）
@@ -43,6 +44,7 @@
       <span class="hud-mode-name" id="hud-mode-name">无尽模式</span>
       <span class="hud-mode-dot"></span>
       <span class="hud-distance" id="hud-distance">0 m</span>
+      <span class="hud-speed" id="hud-speed">6.2 m/s</span>
     </div>
 
     <!-- 顶部中央：冲刺倒计时（仅冲刺模式） -->
@@ -108,7 +110,7 @@
       <div class="boot-sub">跑酷 × 2048 合成</div>
       <div class="boot-spinner"><i></i></div>
       <div class="boot-tip">正在准备糖果赛道…</div>
-      <div class="boot-version" id="boot-version">v0.9.0-demo</div>
+      <div class="boot-version" id="boot-version">v0.9.1-demo</div>
     </div>
   </section>
 
@@ -298,7 +300,7 @@
       <button class="back-btn" id="btn-lb-back" type="button" aria-label="返回">←</button>
       <div class="page-title-wrap">
         <h2 class="page-title">排行榜</h2>
-        <div class="page-sub">本地榜单 · 挑战最高分</div>
+        <div class="page-sub" id="lb-status">在线实时榜 · 正在同步…</div>
       </div>
       <div class="pill pill--best"><span class="ico-star"></span><span id="lb-best">0</span></div>
     </header>
@@ -372,7 +374,7 @@
         </div>
       </div>
 
-      <div class="set-version" id="set-version">《奶娃》 v0.9.0-demo · 本地离线存档</div>
+      <div class="set-version" id="set-version">《奶娃》 v0.9.1-demo · 在线排行榜 · 本地存档</div>
     </div>
   </section>
 
@@ -462,6 +464,7 @@
 <script src="js/config.js"></script>
 <script src="js/util.js"></script>
 <script src="js/save.js"></script>
+<script src="js/online.js"></script>
 <script src="js/core/merge.js"></script>
 <script src="js/core/spawner.js"></script>
 <script src="js/core/run.js"></script>
@@ -474,5 +477,3 @@
 <script src="js/main.js"></script>
 </body>
 </html>
-
-
