@@ -24,6 +24,7 @@
     equip: { skin: 'classic', theme: 'day' },
     settings: { sfx: true, music: true, haptics: true },
     nickname: '奶娃玩家',
+    playerTag: '',        // 匿名玩家标识（在线排行榜去重用，不含设备信息）
     tutorialSeen: false,
     firstRunAt: 0,
     lastRunAt: 0
@@ -33,6 +34,17 @@
   var dirty = false;
 
   function clone(o) { return JSON.parse(JSON.stringify(o)); }
+
+  function makePlayerTag() {
+    var chars = 'abcdef0123456789';
+    var out = '';
+    var rnd = (global.crypto && global.crypto.getRandomValues) ? global.crypto.getRandomValues(new Uint8Array(6)) : null;
+    for (var i = 0; i < 6; i++) {
+      var n = rnd ? rnd[i] : Math.floor(Math.random() * 256);
+      out += chars.charAt(n % 16);
+    }
+    return out;
+  }
 
   function normalize(raw) {
     // 注意：mergeDeep(target, fallbackSource) 的语义是「只填充 target 缺失的键」，
@@ -50,6 +62,7 @@
     if (s.ownedThemes.indexOf(s.equip.theme) < 0) s.equip.theme = 'day';
     s.best = s.best || { endless: 0, sprint: 0 };
     s.bestDistance = s.bestDistance || { endless: 0, sprint: 0 };
+    if (!s.playerTag || !/^[a-z0-9]{4,10}$/.test(s.playerTag)) s.playerTag = makePlayerTag();
     return s;
   }
 
@@ -159,6 +172,7 @@
     return value;
   };
   S.nickname = function () { return S.get().nickname || '奶娃玩家'; };
+  S.playerTag = function () { return S.get().playerTag || ''; };
   S.setNickname = function (name) {
     name = String(name || '').trim().slice(0, 12) || '奶娃玩家';
     S.get().nickname = name;
