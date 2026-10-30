@@ -23,7 +23,9 @@
  *   - 磁铁吸附 26m 内方块/金币；冲刺 60s 计时（intro 结束后才开始）；
  *   - 受击清空 + 复活（清除前方 35m 障碍、3s 无敌）；
  *   - v0.9.2：跳跃 / 滑铲（动作不中断换道）；动作障碍 avoid='jump' 需 y≥clearY、
- *     avoid='slide' 需滑铲中才能通过，普通障碍行为不变（只能换道躲避）。
+ *     avoid='slide' 需滑铲中才能通过，普通障碍行为不变（只能换道躲避）；
+ *   - v0.9.3：滑铲中按跳跃立即取消滑铲并起跳（同帧 rolling=false、jumping=true），
+ *     修复「滑铲后按跳跃需点两下」。
  * ========================================================================== */
 (function (global) {
   'use strict';
@@ -159,10 +161,12 @@
   };
 
   /**
-   * 地铁跑酷式动作（SPEC v0.9.2 §2.1）：
-   * - 'jump'  跳跃：仅地面且未滑铲时生效；空中 / 滑铲中重复触发忽略；
+   * 地铁跑酷式动作（SPEC v0.9.2 §2.1 + v0.9.3 手感修复）：
+   * - 'jump'  跳跃：地面可起跳；若正在滑铲，同帧立即结束滑铲并起跳（v0.9.3，
+   *             修复「滑铲后按跳跃需点两下」）；空中（跳跃中）重复触发忽略；
    * - 'slide' 滑铲：仅地面且未滑铲时生效；空中 / 滑铲中重复触发忽略。
    * 动作不中断换道（动作期间仍可 input，跳跃中也可换道）。
+   * 滑铲被跳跃取消后：rolling=false、rollT=0，下一帧渲染层自动从滑铲姿态恢复。
    * @param {'jump'|'slide'} kind
    * @returns {boolean} 是否真正触发
    */
@@ -174,7 +178,11 @@
     if (kind === 'jump') {
       var J = CFG.run.jump;
       if (!J) return false;
-      if (airborne || p.rolling) return false;      // 空中 / 滑铲中忽略
+      if (airborne) return false;                   // 空中忽略跳跃
+      if (p.rolling) {                              // v0.9.3：滑铲中跳跃 → 立即取消滑铲并起跳
+        p.rolling = false;
+        p.rollT = 0;
+      }
       p.jumping = true;
       p.y = 0;
       p.vy = J.velocity;
@@ -189,7 +197,8 @@
     return true;
   };
 
-  Run.prototype._applyPendingInput = function () {    if (!this._pending.length) return;
+  Run.prototype._applyPendingInput = function () {
+    if (!this._pending.length) return;
     var dir = this._pending.shift();
     var p = this.player;
     var lane = p.lane + dir;
