@@ -44,10 +44,24 @@
     if (isNaN(n)) n = 0;
     return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
   }
-  function rgba(hex, a) {
-    if (U && U.rgba) return U.rgba(hex, a === undefined ? 1 : a);
-    var p = parseHex(hex);
-    return 'rgba(' + p[0] + ',' + p[1] + ',' + p[2] + ',' + (a === undefined ? 1 : a) + ')';
+  /* 生成 rgba 颜色串：同时支持 #hex 与 mix()/lighten() 产出的 rgb()/rgba() 字符串 */
+  function rgba(color, a) {
+    a = (a === undefined || a === null) ? 1 : a;
+    var s = String(color === undefined || color === null ? '#000000' : color).trim();
+    if (s.charAt(0) === '#' || /^[0-9a-fA-F]{3,8}$/.test(s)) {
+      if (U && U.rgba) return U.rgba(s.charAt(0) === '#' ? s : '#' + s, a);
+      var p = parseHex(s);
+      return 'rgba(' + p[0] + ',' + p[1] + ',' + p[2] + ',' + a + ')';
+    }
+    var m = s.match(/^rgba?\(([^)]+)\)$/i);
+    if (m) {
+      var parts = m[1].split(',');
+      var r = Math.round(parseFloat(parts[0]) || 0);
+      var g = Math.round(parseFloat(parts[1]) || 0);
+      var b = Math.round(parseFloat(parts[2]) || 0);
+      return 'rgba(' + r + ',' + g + ',' + b + ',' + a + ')';
+    }
+    return 'rgba(0,0,0,' + a + ')';
   }
   function mix(a, b, t) {
     if (U && U.mix) return U.mix(a, b, t);
@@ -303,6 +317,10 @@
     G.spec = mkRadial(ctx, 0, 0, 0, 0, 0, 1, [
       [0, 'rgba(255,255,255,0.9)'], [0.5, 'rgba(255,255,255,0.36)'], [1, 'rgba(255,255,255,0)']
     ]);
+    /* 接触阴影核心（中心深、边缘透明） */
+    G.coreDark = mkRadial(ctx, 0, 0, 0, 0, 0, 1, [
+      [0, 'rgba(60,34,14,0.5)'], [0.55, 'rgba(60,34,14,0.2)'], [1, 'rgba(60,34,14,0)']
+    ]);
     cache.__shared = G;
     return G;
   }
@@ -318,16 +336,17 @@
     var belly = skin.belly, bellyShade = skin.bellyShade;
     var limb = skin.limb, limbShade = skin.limbShade;
     var eye = skin.eye;
+    /* 阴影统一用「暖棕」而不是直接压暗肤色（避免发绿/发灰） */
+    var shadowTone = mix(darken(bodyShade, 0.18), '#7A4A12', 0.32);
 
     /* 身体主光（左上高光 → 右下阴影，球体感） */
-    G.body = mkRadial(ctx, -9, 2, 2, -5, 20, 84, [
-      [0, lighten(bodyHi, 0.42)],
-      [0.19, bodyHi],
-      [0.4, lighten(body, 0.1)],
-      [0.62, body],
-      [0.8, mix(body, bodyShade, 0.45)],
-      [0.9, bodyShade],
-      [1, darken(bodyShade, 0.16)]
+    G.body = mkRadial(ctx, -9, 2, 2, -6, 22, 82, [
+      [0, lighten(bodyHi, 0.5)],
+      [0.2, bodyHi],
+      [0.45, lighten(body, 0.12)],
+      [0.68, body],
+      [0.86, mix(body, bodyShade, 0.35)],
+      [1, mix(body, bodyShade, 0.8)]
     ]);
     /* 身体底部压暗（很轻，避免肚皮下缘发灰） */
     G.bodyBottom = mkLinear(ctx, 0, 50, 0, 77, [
@@ -351,8 +370,8 @@
     ]);
     /* 右侧暗边 */
     G.edge = mkLinear(ctx, 31, 24, 15, 30, [
-      [0, rgba(darken(bodyShade, 0.3), 0.4)],
-      [0.65, rgba(darken(bodyShade, 0.3), 0.12)],
+      [0, rgba(darken(bodyShade, 0.3), 0.26)],
+      [0.65, rgba(darken(bodyShade, 0.3), 0.08)],
       [1, rgba(darken(bodyShade, 0.3), 0)]
     ]);
     /* 头顶高光（大范围柔和，不要硬高光斑） */
@@ -378,15 +397,15 @@
     ]);
     /* 腿 */
     G.leg = mkLinear(ctx, 0, 62, 0, 95, [
-      [0, mix(body, bodyShade, 0.1)],
+      [0, mix(body, bodyShade, 0.05)],
       [0.42, body],
-      [0.8, mix(body, bodyShade, 0.5)],
-      [1, darken(bodyShade, 0.12)]
+      [0.8, mix(body, bodyShade, 0.38)],
+      [1, mix(bodyShade, shadowTone, 0.35)]
     ]);
     /* 肚子高光 */
     G.bellyHi = mkRadial(ctx, -4.5, 41, 0.5, -4.0, 43, 15, [
-      [0, 'rgba(255,255,255,0.5)'],
-      [0.5, 'rgba(255,255,255,0.14)'],
+      [0, 'rgba(255,255,255,0.38)'],
+      [0.5, 'rgba(255,255,255,0.10)'],
       [1, 'rgba(255,255,255,0)']
     ]);
     /* 脚（局部：原点在脚踝） */
@@ -442,6 +461,110 @@
       [0, rgba(darken(bodyShade, 0.35), 0.13)],
       [0.55, rgba(darken(bodyShade, 0.35), 0.06)],
       [1, rgba(darken(bodyShade, 0.35), 0)]
+    ]);
+
+    /* ==================================================================
+     * v0.9.3 —— 3D 体积光 / 材质分层（主光 + 环境光 + 轮廓光 + AO）
+     * 全部由该 skin 的颜色字段派生，因此 5 套配色自动具备受光/背光/AO 三层
+     * ================================================================== */
+    /* ==================================================================
+     * v0.9.3 —— 软胶 / 毛绒手办质感的体积光（严格保持肤色饱和度）
+     * 受光面 = 肤色亮部(bodyHi 亮黄)，暗面 = 暖橙棕(bodyShade / darken)，
+     * 只有「顶部小柔光 + 肚皮椭圆柔光 + 右下细轮廓光 + 局部接触 AO」，
+     * 不做全图白/灰蒙层，也不做横贯式高光条（避免廉价塑料感）。
+     * ================================================================== */
+    /* 底部接地 AO（只压身体最下缘，暖棕半透明） */
+    G.bodyAO = mkLinear(ctx, 0, 62, 0, 76, [
+      [0, rgba(bodyShade, 0)],
+      [0.55, rgba(bodyShade, 0.16)],
+      [1, rgba(darken(bodyShade, 0.1), 0.32)]
+    ]);
+    /* 头顶右侧的球体暗部（让「头」读成球体而不是平面） */
+    G.headRound = mkRadial(ctx, 14.5, 15.5, 2, 11.0, 13.0, 15.0, [
+      [0, rgba(bodyShade, 0.16)],
+      [0.55, rgba(bodyShade, 0.06)],
+      [1, rgba(bodyShade, 0)]
+    ]);
+    /* 头与身体交界处的柔和 AO（无脖子，用阴影暗示体积） */
+    G.neckAO = mkRadial(ctx, 0, 0, 0, 0, 0, 1, [
+      [0, rgba(bodyShade, 0.12)], [0.6, rgba(bodyShade, 0.05)], [1, rgba(bodyShade, 0)]
+    ]);
+    /* 右下方细轮廓光（暖奶油色，只出现在下右半边，宽度 ≈ h 的 2.5%） */
+    G.rimStroke = mkLinear(ctx, -14, -6, 30, 74, [
+      [0, rgba(lighten(bodyHi, 0.55), 0)],
+      [0.50, rgba(lighten(bodyHi, 0.5), 0)],
+      [0.78, rgba(lighten(bodyHi, 0.55), 0.40)],
+      [1, rgba(lighten(bodyHi, 0.45), 0.16)]
+    ]);
+    /* 头顶左上：大范围极淡柔光 + 一个小而亮的高光（面积小，不罩住脸） */
+    G.headHi = mkRadial(ctx, -6.0, 2.4, 0.5, -6.0, 2.4, 9.5, [
+      [0, rgba(lighten(bodyHi, 0.55), 0.26)],
+      [0.55, rgba(lighten(bodyHi, 0.5), 0.09)],
+      [1, rgba(lighten(bodyHi, 0.5), 0)]
+    ]);
+    G.headSpec = mkRadial(ctx, -6.4, 2.0, 0.2, -6.4, 2.0, 3.4, [
+      [0, 'rgba(255,255,255,0.5)'],
+      [0.5, 'rgba(255,255,255,0.14)'],
+      [1, 'rgba(255,255,255,0)']
+    ]);
+    /* 肚皮：柔和椭圆高光 + 上缘窄高光 + 内凹阴影 + 下缘 AO（全部暖色） */
+    G.bellyHi = mkRadial(ctx, -4.8, 40.5, 0.5, -4.4, 41.5, 13.5, [
+      [0, rgba(lighten(belly, 0.35), 0.34)],
+      [0.5, rgba(lighten(belly, 0.3), 0.11)],
+      [1, rgba(lighten(belly, 0.25), 0)]
+    ]);
+    G.bellyTopHi = mkLinear(ctx, 0, 31.2, 0, 37.0, [
+      [0, rgba(lighten(belly, 0.55), 0.30)],
+      [0.6, rgba(lighten(belly, 0.5), 0.07)],
+      [1, rgba(lighten(belly, 0.5), 0)]
+    ]);
+    G.bellyInner = mkLinear(ctx, 0, 30.6, 0, 43, [
+      [0, rgba(bodyShade, 0.16)],
+      [0.30, rgba(bodyShade, 0.05)],
+      [1, rgba(bodyShade, 0)]
+    ]);
+    G.bellyAO = mkLinear(ctx, 0, 60, 0, 71.5, [
+      [0, rgba(bodyShade, 0)],
+      [0.65, rgba(bodyShade, 0.10)],
+      [1, rgba(darken(bodyShade, 0.08), 0.24)]
+    ]);
+    /* 手 / 脚：球体暗部（局部坐标，配合绘制时的 translate） */
+    G.handAO = mkLinear(ctx, 0, -5, 0, 6.5, [
+      [0, 'rgba(0,0,0,0)'],
+      [0.5, rgba(limbShade, 0.10)],
+      [1, rgba(limbShade, 0.46)]
+    ]);
+    G.footAO = mkLinear(ctx, 0, -6.5, 0, 8, [
+      [0, 'rgba(0,0,0,0)'],
+      [0.5, rgba(limbShade, 0.12)],
+      [1, rgba(limbShade, 0.5)]
+    ]);
+    /* yaw 转向：远侧肢体用暖暗材质（被身体遮挡的深度感） */
+    G.legFar = mkLinear(ctx, 0, 62, 0, 95, [
+      [0, mix(body, bodyShade, 0.40)],
+      [0.45, mix(body, bodyShade, 0.62)],
+      [1, mix(bodyShade, darken(bodyShade, 0.1), 0.6)]
+    ]);
+    G.armFar = mkLinear(ctx, -26, 22, 22, 50, [
+      [0, mix(body, bodyShade, 0.38)],
+      [0.5, mix(body, bodyShade, 0.58)],
+      [1, mix(bodyShade, darken(bodyShade, 0.1), 0.55)]
+    ]);
+    G.forearmFar = mkLinear(ctx, 0, 36, 0, 52, [
+      [0, mix(body, bodyShade, 0.38)],
+      [0.6, mix(body, bodyShade, 0.6)],
+      [1, mix(bodyShade, darken(bodyShade, 0.1), 0.55)]
+    ]);
+    /* yaw 转向：身体远侧的侧向明暗（只在远侧边缘，暖色） */
+    G.yawShadeL = mkLinear(ctx, -33, 34, -13, 44, [
+      [0, rgba(bodyShade, 0.30)],
+      [0.7, rgba(bodyShade, 0.09)],
+      [1, rgba(bodyShade, 0)]
+    ]);
+    G.yawShadeR = mkLinear(ctx, 33, 34, 13, 44, [
+      [0, rgba(bodyShade, 0.30)],
+      [0.7, rgba(bodyShade, 0.09)],
+      [1, rgba(bodyShade, 0)]
     ]);
 
     cache[key] = G;
@@ -572,12 +695,19 @@
    * 6. 部件绘制
    * ==================================================================== */
 
-  /* ---- 腿 + 脚（画在身体之前，被身体挡住根部） ---- */
-  function drawLegs(ctx, skin, G, t, p) {
-    var side, i;
-    for (i = 0; i < 2; i++) {
-      side = i === 0 ? -1 : 1;
-      var ph = Math.sin(t * p.legPhase + (i === 0 ? 0 : Math.PI));
+  /* ---- 腿 + 脚（画在身体之前；yaw 时远侧腿更暗、更靠内、被身体遮挡更多） ---- */
+  function drawLegs(ctx, skin, G, t, p, yaw) {
+    var SH = sharedGrads(ctx);
+    var yawAbs = Math.abs(yaw || 0);
+    var yawK = clamp(yawAbs / 0.4, 0, 1);
+    var farSide = yawAbs < 0.03 ? 0 : (yaw > 0 ? -1 : 1);
+    var order = farSide === 1 ? [1, -1] : [-1, 1];
+    var oi, side, isFar;
+
+    for (oi = 0; oi < 2; oi++) {
+      side = order[oi];
+      isFar = (side === farSide);
+      var ph = Math.sin(t * p.legPhase + (side < 0 ? 0 : Math.PI));
       var lift = Math.max(0, ph) * p.legLift;
       var dx = ph * p.legSwingX;
       var hipX, hipY, kneeX, kneeY, ankX, ankY, footRot, widths;
@@ -604,11 +734,25 @@
         widths = [17.2, 14.6, 11.2];
       }
 
-      var legPts = [[hipX, hipY], [kneeX, kneeY], [ankX, ankY]];
-      strokeTaper(ctx, legPts, widths, G.leg);
+      /* yaw：远侧腿向内收（被身体遮挡更多），近侧腿略向外 */
+      var inward = isFar ? -side * 1.7 * yawK : side * 0.6 * yawK;
+      hipX += inward; kneeX += inward; ankX += inward;
 
-      /* 脚 */
+      var legPts = [[hipX, hipY], [kneeX, kneeY], [ankX, ankY]];
+      strokeTaper(ctx, legPts, widths, isFar ? G.legFar : G.leg);
+
+      /* 腿的圆柱高光（单条 path stroke → alpha 均匀，无接缝） */
       ctx.save();
+      ctx.lineCap = 'round';
+      ctx.strokeStyle = 'rgba(255,255,255,' + (isFar ? 0.10 : 0.18) + ')';
+      ctx.lineWidth = 3.0;
+      smoothPath(ctx, offsetPts(legPts, -2.0, -1.2));
+      ctx.stroke();
+      ctx.restore();
+
+      /* 脚（远侧脚略暗一点） */
+      ctx.save();
+      if (isFar) ctx.globalAlpha = ctx.globalAlpha * (1 - 0.10 * yawK);
       ctx.translate(ankX, ankY);
       ctx.rotate(footRot);
       fillBody(ctx, 'foot', FOOT_PTS, G.foot);
@@ -630,18 +774,38 @@
         ctx.quadraticCurveTo(j * 2.6, 6.5, j * 2.3, 4.7);
         ctx.stroke();
       }
-      /* 脚背高光 */
+      /* 脚部球体暗部（下半部 AO） */
+      fillBody(ctx, 'foot', FOOT_PTS, G.footAO);
+      ctx.save();
+      ctx.translate(0, 4.4);
+      ctx.scale(8.4, 3.2);
+      ctx.fillStyle = G.footAO;
+      ctx.beginPath(); ctx.arc(0, 0, 1, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
+      /* 脚背高光 + 小 specular */
       ctx.save();
       ctx.translate(0, -3.0);
       ctx.scale(8.2, 3.4);
       ctx.fillStyle = G.footHi;
       ctx.beginPath(); ctx.arc(0, 0, 1, 0, Math.PI * 2); ctx.fill();
       ctx.restore();
-      /* 脚底接触暗部 */
       ctx.save();
-      ctx.translate(0, 7.6);
-      ctx.scale(8.0, 1.8);
-      ctx.fillStyle = 'rgba(38,20,8,0.26)';
+      ctx.translate(-1.6, -4.2);
+      ctx.scale(2.6, 1.4);
+      ctx.fillStyle = SH.spec;
+      ctx.beginPath(); ctx.arc(0, 0, 1, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
+      /* 落地接触阴影（脚掌下方：宽软 + 窄深两层） */
+      ctx.save();
+      ctx.translate(0, 8.6);
+      ctx.scale(10.2, 2.6);
+      ctx.fillStyle = 'rgba(38,20,8,0.14)';
+      ctx.beginPath(); ctx.arc(0, 0, 1, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
+      ctx.save();
+      ctx.translate(0, 7.8);
+      ctx.scale(7.6, 1.7);
+      ctx.fillStyle = 'rgba(38,20,8,0.28)';
       ctx.beginPath(); ctx.arc(0, 0, 1, 0, Math.PI * 2); ctx.fill();
       ctx.restore();
       ctx.restore();
@@ -649,7 +813,8 @@
   }
 
   /* ---- 手臂点位：上臂（藏身后）、肘、手（贴肚皮） ---- */
-  function armPoints(side, a, pose) {
+  /* ---- 手臂点位：上臂（藏身后）、肘、手（贴肚皮）；xShift 用于 yaw 转向时整体贴向身体 ---- */
+  function armPoints(side, a, pose, xShift) {
     var S, P, H;
     if (pose === 'up') {
       S = [12.4, 34.0]; P = [23.0, 30.4]; H = [25.4, 19.2];
@@ -658,9 +823,10 @@
     } else {
       S = [12.4, 34.2]; P = [24.6, 39.6]; H = [11.8, 47.6];
     }
-    S = [side * S[0], S[1]];
-    P = [side * P[0], P[1]];
-    H = [side * H[0], H[1]];
+    var sh = xShift || 0;
+    S = [side * S[0] + sh, S[1]];
+    P = [side * P[0] + sh, P[1]];
+    H = [side * H[0] + sh, H[1]];
     /* 绕肩摆动：>0 = 向外 / 向上 */
     var rot = -side * a;
     var pv = rotVec(P[0] - S[0], P[1] - S[1], rot);
@@ -698,6 +864,16 @@
     ctx.beginPath();
     ctx.ellipse(-0.9, -4.1, 1.9, 1.5, -0.6, 0, Math.PI * 2);
     ctx.fill();
+    /* 球体暗部（手掌下半部 AO，暗端） */
+    ctx.save();
+    ctx.fillStyle = G.handAO;
+    ctx.beginPath();
+    ctx.ellipse(0.3, 0.4, 5.0, 5.1, 0.3, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.ellipse(0.6, 3.2, 4.5, 3.1, 0.1, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
     /* 指缝 */
     ctx.strokeStyle = rgba(skin.limbShade, 0.5);
     ctx.lineWidth = 0.65;
@@ -713,40 +889,67 @@
     ctx.fillStyle = G.handHi;
     ctx.beginPath(); ctx.arc(0, 0, 1, 0, Math.PI * 2); ctx.fill();
     ctx.restore();
+    /* 小 specular（球体高光点） */
+    ctx.save();
+    ctx.translate(-0.2, -3.0);
+    ctx.scale(1.8, 1.1);
+    ctx.fillStyle = SH.spec;
+    ctx.beginPath(); ctx.arc(0, 0, 1, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
     ctx.restore();
   }
 
-  /* ---- 手臂后层：上臂（藏身后）；slide 时整条手臂都在身后 ---- */
-  function drawArmsBack(ctx, skin, G, t, p) {
+  /* ---- yaw 辅助：判断是否在转向、远侧是哪边 ---- */
+  function armYawInfo(yaw) {
+    var yawAbs = Math.abs(yaw || 0);
+    return {
+      active: yawAbs > 0.03,
+      yawK: clamp(yawAbs / 0.4, 0, 1),
+      farSide: (yaw || 0) > 0 ? -1 : 1
+    };
+  }
+
+  /* ---- 手臂后层：上臂（藏身后）；slide 时整条手臂都在身后；
+          yaw 转向时只画「远侧」整条手臂（被身体遮挡），近侧改到前层整条绘制 ---- */
+  function drawArmsBack(ctx, skin, G, t, p, yaw) {
+    var info = armYawInfo(yaw);
     var i, side;
     for (i = 0; i < 2; i++) {
       side = i === 0 ? -1 : 1;
+      var isFar = info.active && side === info.farSide;
       var phase = Math.sin(t * p.armPhase + (i === 0 ? 0 : Math.PI));
       var a = p.arm + p.armSwing * phase;
-      var A = armPoints(side, a, p.armPose);
+      var xShift = info.active ? (-side * (isFar ? 1.0 : 2.4) * info.yawK) : 0;
+      var A = armPoints(side, a, p.armPose, xShift);
 
       /* 上臂：肩 → 肘（大部分被身体挡住，只在身体轮廓外露出小肩头） */
       var upPts = [A.S, [(A.S[0] + A.P[0]) / 2 + side * 0.6, (A.S[1] + A.P[1]) / 2 - 0.6], A.P];
-      strokeTaper(ctx, upPts, [13.6, 12.2, 10.4], G.arm);
+      strokeTaper(ctx, upPts, [13.6, 12.2, 10.4], isFar ? G.armFar : G.arm);
 
-      if (p.armPose === 'back') {
-        /* 滑铲：前臂与手也画在身后，形成「手臂后摆」 */
+      if (p.armPose === 'back' || isFar) {
+        /* 滑铲 / yaw 远侧：前臂与手也画在身后，形成「手臂后摆 / 被身体遮挡」 */
         var faPts = [A.P, [(A.P[0] + A.H[0]) / 2, (A.P[1] + A.H[1]) / 2 + 0.4], A.H];
-        strokeTaper(ctx, faPts, [10.4, 9.4, 8.2], G.forearm);
+        strokeTaper(ctx, faPts, [10.4, 9.4, 8.2], isFar ? G.forearmFar : G.forearm);
+        ctx.save();
+        if (isFar) ctx.globalAlpha = ctx.globalAlpha * (1 - 0.14 * info.yawK);
         drawHand(ctx, skin, G, side, A.H[0], A.H[1], handAngle(A.P, A.H, side));
+        ctx.restore();
       }
     }
   }
 
-  /* ---- 手臂前层：前臂 + 手（自然搭在肚皮两侧） ---- */
-  function drawArmsFront(ctx, skin, G, t, p) {
+  /* ---- 手臂前层：前臂 + 手（自然搭在肚皮两侧；yaw 时远侧交给后层） ---- */
+  function drawArmsFront(ctx, skin, G, t, p, yaw) {
     if (p.armPose === 'back') return;
+    var info = armYawInfo(yaw);
     var i, side;
     for (i = 0; i < 2; i++) {
       side = i === 0 ? -1 : 1;
+      if (info.active && side === info.farSide) continue;   /* 远侧手臂画在身体后面 */
       var phase = Math.sin(t * p.armPhase + (i === 0 ? 0 : Math.PI));
       var a = p.arm + p.armSwing * phase;
-      var A = armPoints(side, a, p.armPose);
+      var xShift = info.active ? (-side * 2.4 * info.yawK) : 0;
+      var A = armPoints(side, a, p.armPose, xShift);
       var P = A.P, H = A.H;
 
       var faPts = [P, [(P[0] + H[0]) / 2, (P[1] + H[1]) / 2 + 0.5], H];
@@ -789,74 +992,124 @@
     }
   }
 
-  /* ---- 身体 + 肚皮 + 光影 ---- */
-  function drawBody(ctx, skin, G, t, p) {
+  /* ---- 身体 + 肚皮 + 光影（v0.9.3：亮黄受光 + 暖橙暗面 + 局部小高光/AO） ---- */
+  function drawBody(ctx, skin, G, t, p, yaw) {
     var SH = sharedGrads(ctx);
+    var yawK = clamp((yaw || 0) / 0.4, -1, 1);
 
-    /* 主轮廓 */
+    /* 主轮廓（基础球体渐变：亮黄 → 暖橙，已经是唯一的大面积明暗层） */
     fillBody(ctx, 'body', BODY_PTS, G.body);
 
     ctx.save();
     clipBody(ctx, 'body', BODY_PTS);
 
-    /* 底部接地压暗 */
-    ctx.fillStyle = G.bodyBottom;
-    ctx.fillRect(-33, 36, 66, 42);
+    /* 1) 球体暗部：头部右侧 + 头身交界 AO（让头读成球体） */
+    ctx.save();
+    ctx.translate(11.0, 13.0);
+    ctx.scale(15.0, 15.0);
+    ctx.fillStyle = G.headRound;
+    ctx.beginPath(); ctx.arc(0, 0, 1, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+    ctx.save();
+    ctx.translate(0, 29.0);
+    ctx.scale(14.5, 4.6);
+    ctx.fillStyle = G.neckAO;
+    ctx.beginPath(); ctx.arc(0, 0, 1, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
 
-    /* 左侧轮廓补光 + 右侧暗边（铺满裁剪区，避免硬边） */
-    ctx.fillStyle = G.rim;
-    ctx.fillRect(-33, 0, 23, 78);
-    ctx.fillStyle = G.edge;
-    ctx.fillRect(11, 0, 23, 78);
+    /* 2) 底部接地 AO（只压最下缘，暖棕） */
+    ctx.fillStyle = G.bodyAO;
+    ctx.fillRect(-33, 62, 66, 16);
 
-    /* 肚皮（奶油大肚） */
+    /* yaw 转向：只压远侧边缘（暖色，不罩整体） */
+    if (Math.abs(yaw) > 0.02) {
+      ctx.save();
+      ctx.globalAlpha = ctx.globalAlpha * Math.min(1, Math.abs(yawK)) * 0.95;
+      ctx.fillStyle = yaw > 0 ? G.yawShadeL : G.yawShadeR;
+      ctx.fillRect(-33, 0, 66, 78);
+      ctx.restore();
+    }
+
+    /* ---- 奶油大肚皮：随 yaw 横向微移（透视下的肚皮中心偏移） ---- */
     var wob = 1 + p.bellyWobble;
+    var bellyDX = (yaw || 0) * 2.2;
+    ctx.save();
+    ctx.translate(bellyDX, 0);
     ctx.save();
     ctx.translate(0, 50);
     ctx.scale(1 / wob, wob);
     ctx.translate(0, -50);
     fillBody(ctx, 'belly', BELLY_PTS, G.belly);
-    ctx.restore();
 
-    /* 肚皮高光 */
+    /* 肚皮内部光影（裁剪在肚皮内） */
     ctx.save();
-    ctx.translate(-4.2, 41);
-    ctx.scale(13.5, 11.5);
+    clipBody(ctx, 'belly', BELLY_PTS);
+    /* 内凹阴影（上缘内侧，暖色） */
+    ctx.fillStyle = G.bellyInner;
+    ctx.fillRect(-26, 29, 52, 16);
+    /* 上缘窄高光（只在最上沿，不做横贯白条） */
+    ctx.fillStyle = G.bellyTopHi;
+    ctx.fillRect(-26, 30, 52, 8);
+    /* 下缘 AO（奶油肚皮底部折进去） */
+    ctx.fillStyle = G.bellyAO;
+    ctx.fillRect(-26, 59, 52, 14);
+    /* 主高光（肚皮前上方一个柔和椭圆） */
+    ctx.save();
+    ctx.translate(-4.8, 40.8);
+    ctx.scale(12.0, 10.0);
     ctx.fillStyle = G.bellyHi;
     ctx.beginPath(); ctx.arc(0, 0, 1, 0, Math.PI * 2); ctx.fill();
     ctx.restore();
-
-    /* 肚皮左侧弧形高光 */
+    /* 左侧弧形高光（弱） */
     ctx.save();
-    ctx.translate(-9.6, 45);
-    ctx.scale(4.0, 11.0);
-    ctx.fillStyle = 'rgba(255,255,255,0.24)';
+    ctx.translate(-9.8, 45);
+    ctx.scale(3.6, 9.5);
+    ctx.fillStyle = 'rgba(255,255,255,0.18)';
     ctx.beginPath(); ctx.arc(0, 0, 1, 0, Math.PI * 2); ctx.fill();
     ctx.restore();
-
-    /* 肚皮底部：极淡的奶油高光（不要深色晕斑） */
+    /* 小 specular（一处很小的锐利高光点） */
     ctx.save();
-    ctx.translate(-1.0, 62.5);
-    ctx.scale(13.0, 6.2);
-    ctx.fillStyle = 'rgba(255,255,255,0.16)';
+    ctx.translate(-6.6, 38.4);
+    ctx.scale(2.2, 1.35);
+    ctx.globalAlpha = ctx.globalAlpha * 0.80;
+    ctx.fillStyle = SH.spec;
     ctx.beginPath(); ctx.arc(0, 0, 1, 0, Math.PI * 2); ctx.fill();
     ctx.restore();
+    ctx.restore(); /* end belly clip */
+    ctx.restore(); /* end wobble */
+    ctx.restore(); /* end belly yaw shift */
 
-    /* 头顶高光 */
+    /* ---- 头顶左上：柔和小高光 + 一点 specular（不罩住脸） ---- */
+    var hdx = (yaw || 0) * 1.6;
     ctx.save();
-    ctx.translate(-5.8, 4.8);
-    ctx.scale(19.0, 18.0);
+    ctx.translate(-6.0 + hdx, 2.4);
+    ctx.scale(9.5, 9.5);
     ctx.fillStyle = G.headHi;
     ctx.beginPath(); ctx.arc(0, 0, 1, 0, Math.PI * 2); ctx.fill();
     ctx.restore();
+    ctx.save();
+    ctx.translate(-6.4 + hdx, 2.0);
+    ctx.scale(3.4, 3.4);
+    ctx.fillStyle = G.headSpec;
+    ctx.beginPath(); ctx.arc(0, 0, 1, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
 
-    ctx.restore(); /* end clip */
+    ctx.restore(); /* end body clip */
 
+    var P = getPaths();
     /* 极淡轮廓线，让边缘更干净 */
     ctx.save();
-    ctx.strokeStyle = rgba(darken(skin.bodyShade, 0.35), 0.15);
+    ctx.strokeStyle = rgba(darken(skin.bodyShade, 0.35), 0.12);
     ctx.lineWidth = 0.7;
-    var P = getPaths();
+    if (P && P.body) ctx.stroke(P.body);
+    else { ctx.beginPath(); traceCurve(ctx, BODY_PTS, true); ctx.stroke(); }
+    ctx.restore();
+
+    /* 右下方细轮廓光（暖奶油，只在身体下右边缘，宽 ≈ 2.5% h） */
+    ctx.save();
+    ctx.strokeStyle = G.rimStroke;
+    ctx.lineWidth = 2.4;
+    ctx.lineJoin = 'round';
     if (P && P.body) ctx.stroke(P.body);
     else { ctx.beginPath(); traceCurve(ctx, BODY_PTS, true); ctx.stroke(); }
     ctx.restore();
@@ -1146,9 +1399,10 @@
   }
 
   /* ---- 脸部整体 ---- */
-  function drawFace(ctx, skin, G, face, blink, p) {
+  function drawFace(ctx, skin, G, face, blink, p, yaw) {
     var E = EXPR[face] || EXPR.smile;
     var i, side;
+    var yawK = clamp((yaw || 0) / 0.4, -1, 1);
 
     ctx.save();
     /* 仰头 / 低头：以头部中心为轴 */
@@ -1157,6 +1411,11 @@
       ctx.translate(0, 12);
       ctx.rotate(p.faceTilt);
       ctx.translate(0, -12);
+    }
+    /* yaw 转向：五官横向偏移 + 轻微横向压缩（透视） */
+    if (Math.abs(yaw || 0) > 0.001) {
+      ctx.translate(yaw * 5.6, 0);
+      ctx.scale(1 - 0.07 * Math.abs(yawK), 1);
     }
 
     /* 腮红（小、柔） */
@@ -1238,6 +1497,7 @@
     var state = opts.state || 'idle';
     var skin = opts.skin || SKIN_FALLBACK;
     var lean = opts.lean || 0;
+    var yaw = clamp(opts.yaw || 0, -0.5, 0.5);   /* v0.9.3：换道转向（弧度，默认 0） */
     var alpha = (opts.alpha === undefined || opts.alpha === null) ? 1 : opts.alpha;
     var squash = clamp(opts.squash || 0, 0, 1);
     var face = opts.face || FACE_BY_STATE[state] || 'smile';
@@ -1253,12 +1513,15 @@
     /* 受击挤压 / 跳跃拉长 / 滑铲压低，都以脚底为基准 */
     var sy = (1 - 0.26 * squash) * (1 + p.jelly) * p.stretchY;
     var sx = (1 + 0.22 * squash) * (1 - p.jelly * 0.7) * p.stretchX;
+    /* yaw 转向：整体横向透视压缩（±0.4rad → 约 0.83 倍宽） */
+    var yawK = clamp(yaw / 0.4, -1, 1);
+    var yawSquash = 1 - 0.17 * Math.min(1, Math.abs(yawK));
 
     ctx.save();
     ctx.globalAlpha = ctx.globalAlpha * alpha;
     ctx.translate(opts.x || 0, opts.y || 0);
     if (lean) ctx.rotate(lean);
-    ctx.scale(s * sx, s * sy);
+    ctx.scale(s * sx * yawSquash, s * sy);
     ctx.translate(0, -100);            /* 设计空间 y: 0=头顶, 100=脚底 */
     if (p.shake) ctx.translate(Math.sin(t * 54) * 1.6, 0);
 
@@ -1266,38 +1529,58 @@
 
     ctx.translate(0, -p.bob);
 
-    drawLegs(ctx, skin, G, t, p);
-    drawArmsBack(ctx, skin, G, t, p);
-    drawBody(ctx, skin, G, t, p);
-    drawArmsFront(ctx, skin, G, t, p);
-    drawFace(ctx, skin, G, face, blink, p);
+    drawLegs(ctx, skin, G, t, p, yaw);
+    drawArmsBack(ctx, skin, G, t, p, yaw);
+    drawBody(ctx, skin, G, t, p, yaw);
+    drawArmsFront(ctx, skin, G, t, p, yaw);
+    drawFace(ctx, skin, G, face, blink, p, yaw);
 
     ctx.restore();
   }
 
-  /* 地面软阴影 */
-  function drawShadow(ctx, x, y, rx, alpha) {
+  /* 地面接触软阴影（v0.9.3：三层 + 可选跳起高度；向后兼容旧 4 参数调用） */
+  function drawShadow(ctx, x, y, rx, alpha, jumpArg) {
     if (!ctx || !ctx.beginPath) return;
     rx = (rx > 0) ? rx : 40;
     alpha = (alpha === undefined || alpha === null) ? 1 : clamp(alpha, 0, 1);
     if (alpha <= 0.003) return;
+    var jump = 0, yaw = 0;
+    if (typeof jumpArg === 'number') jump = jumpArg;
+    else if (jumpArg && typeof jumpArg === 'object') {
+      jump = jumpArg.jump || jumpArg.height || 0;
+      yaw = jumpArg.yaw || 0;
+    }
+    jump = clamp(jump, 0, 8);
+    /* 跳起越高：接触阴影越小、越淡、越软（与 game.js 已做的缩放叠加仍自然） */
+    var shrink = 1 / (1 + jump * 0.22);
+    var fade = 1 / (1 + jump * 0.45);
+    var r = rx * shrink;
+    var a = alpha * fade;
     var SH = sharedGrads(ctx);
 
     ctx.save();
-    ctx.translate(x || 0, y || 0);
-    ctx.globalAlpha = ctx.globalAlpha * alpha;
+    ctx.translate((x || 0) - (yaw || 0) * rx * 0.04, (y || 0) + rx * 0.03);
+    ctx.globalAlpha = ctx.globalAlpha * a;
 
-    /* 外层柔和投影 */
+    /* 1) 外层极软环境阴影 */
     ctx.save();
-    ctx.scale(rx, rx * 0.34);
+    ctx.translate(r * 0.05, 0);
+    ctx.scale(r * 1.14, r * 0.40);
     ctx.fillStyle = SH.softShadow;
     ctx.beginPath(); ctx.arc(0, 0, 1.55, 0, Math.PI * 2); ctx.fill();
     ctx.restore();
 
-    /* 内层接地暗部 */
+    /* 2) 中层 */
     ctx.save();
-    ctx.scale(rx * 0.62, rx * 0.17);
-    ctx.fillStyle = 'rgba(74,42,16,0.3)';
+    ctx.scale(r * 0.78, r * 0.24);
+    ctx.fillStyle = 'rgba(74,42,16,0.22)';
+    ctx.beginPath(); ctx.arc(0, 0, 1, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+
+    /* 3) 接触核心（中心深、边缘透明） */
+    ctx.save();
+    ctx.scale(r * 0.55, r * 0.145);
+    ctx.fillStyle = SH.coreDark;
     ctx.beginPath(); ctx.arc(0, 0, 1, 0, Math.PI * 2); ctx.fill();
     ctx.restore();
 
