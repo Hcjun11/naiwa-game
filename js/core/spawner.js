@@ -10,12 +10,15 @@
  *   sp.prefill(speed) -> Entity[]                   // 开局预填充（由近到远生成，rowOrdinal 即遭遇顺序）
  *   sp.rowOrdinal / sp.trail / sp.nextId
  *
- * 生成不变量（SPEC 1.3 / 3.6）：
- *   - 每行障碍 ≤ 2，且永远至少留 1 条空跑道；
+ * 生成不变量（SPEC 1.3 / 3.6 / v0.9.2 §2.4）：
+ *   - 每行障碍 ≤ 2，且永远至少留 1 条完全无障碍的安全跑道；
  *   - 数字方块不与同行障碍同道，每行 1~2 个；
  *   - 前 CFG.spawn.graceRows 行 且 前 CFG.run.graceDistance 米只出方块不出障碍；
  *   - 金币可连续 coinTrailRows 行排成同列“金条”（coinTrailValue 价值更高）；
- *   - 道具按 Run 的 22~34s 计时请求生成，放在本行空闲跑道。
+ *   - 道具按 Run 的 22~34s 计时请求生成，放在本行空闲跑道；
+ *   - v0.9.2 动作障碍：低栏（avoid='jump', variant=3）需跳跃、横杆（avoid='slide', variant=4）
+ *     需滑铲；按 actionObstacleChance 随距离 0.16→0.40 尝试生成，两个动作障碍至少间隔
+ *     actionObstacleGap 米；不出现于 grace 距离内；动作障碍同样计入“每行 ≤2 且留安全道”。
  * 纯逻辑，无 DOM 依赖；所有随机数仅来自 this.rng。
  * ========================================================================== */
 (function (global) {
@@ -50,12 +53,34 @@
       value: value, power: null, variant: 0
     };
   }
-  function makeObstacle(self, lane, z, variant) {
+  function makeObstacle(self, lane, z, variant, extra) {
     var size = obstacleSize();
-    return {
+    var e = {
       id: self._newId(), kind: 'obstacle', lane: lane,
       x: CFG.laneX(lane), y: 0, z: z,
       value: 0, power: null, variant: variant, w: size.w, h: size.h
+    };
+    if (extra) {
+      if (extra.avoid) e.avoid = extra.avoid;                   // 'jump' | 'slide'（普通障碍不设此键）
+      if (extra.clearY != null) e.clearY = extra.clearY;        // avoid='jump' 的通过高度
+      if (extra.w != null) e.w = extra.w;
+      if (extra.h != null) e.h = extra.h;
+    }
+    return e;
+  }
+
+  /* 动作障碍尺寸（可选 CFG.spawn.actionObstacleSize.{hurdle,bar} 覆盖，缺省取 SPEC v0.9.2 数值） */
+  function actionObstacleSize(type) {
+    var conf = (CFG.spawn && CFG.spawn.actionObstacleSize) || {};
+    var entry = conf[type] || {};
+    var base = obstacleSize();
+    if (type === 'hurdle') {
+      return { w: cfgNum(entry, 'w', base.w), h: cfgNum(entry, 'h', CFG.run.jump.clearY) };
+    }
+    return {
+      w: cfgNum(entry, 'w', base.w),
+      h: cfgNum(entry, 'h', 1.7),           // 横杆总高约 1.5~1.8（SPEC v0.9.2 §3.3）
+      clearY: cfgNum(entry, 'clearY', 0.9)  // 横梁底部净空（渲染/语义参考；碰撞判定用 rolling）
     };
   }
   function makeCoin(self, lane, z, value) {
@@ -94,6 +119,7 @@
     this.rowOrdinal = 0;    // 已生成行数（按“被玩家遇到”的顺序递增）
     this.trail = null;      // 金条状态：{lane, rowsLeft, value} | null
     this.nextId = 1;        // 实体 id：每局（reset 后）从 1 自增，同局唯一且可复现
+    this.lastActionTrack = -Infinity;   // 上一个动作障碍行的赛道里程（用于 actionObstacleGap）
     return this;
   };
 
@@ -140,6 +166,43 @@
           laneUsed[lane] = true;
           laneObstacle[lane] = true;
           entities.push(makeObstacle(this, lane, z, U.randInt(rng, 0, 2)));
+        }
+      }
+    }
+
+    /* ---------- 1b) 动作障碍（v0.9.2：低栏需跳 / 横杆需滑，独立按概率追加） ---------- */
+    if (allowObstacle) {
+      var actionConf = spawn.actionObstacleChance;
+      if (actionConf) {
+        var actionChance = U.clamp(
+          U.remap(trackDistance, 0, actionConf.rampDistance, actionConf.start, actionConf.end),
+          actionConf.start, actionConf.end
+        );
+        var actionGap = cfgNum(spawn, 'actionObstacleGap', 14);
+        var gapOk = trackDistance - this.lastActionTrack >= actionGap - 1e-9;
+        var obstacleCount = 0;
+        for (i = 0; i < entities.length; i++) if (entities[i].kind === 'obstacle') obstacleCount += 1;
+        /* 硬约束：本行障碍 ≤2 且至少留 1 条完全无障碍安全跑道 */
+        if (gapOk && obstacleCount < n - 1 && U.chance(actionChance, rng)) {
+          var actionLanes = [];
+          for (i = 0; i < n; i++) if (!laneUsed[i]) actionLanes.push(i);
+          if (actionLanes.length) {
+            lane = actionLanes.length === 1 ? actionLanes[0] : actionLanes[U.randInt(rng, 0, actionLanes.length - 1)];
+            var actionWeights = spawn.actionObstacleWeights || [['hurdle', 55], ['bar', 45]];
+            var actionType = U.weightedPick(actionWeights, rng);   // 'hurdle' 低栏 | 'bar' 横杆
+            var isHurdle = actionType === 'hurdle';
+            var actionSize = actionObstacleSize(actionType);
+            var actionClearY = isHurdle ? CFG.run.jump.clearY : actionSize.clearY;
+            entities.push(makeObstacle(this, lane, z, isHurdle ? 3 : 4, {
+              avoid: isHurdle ? 'jump' : 'slide',
+              clearY: actionClearY,
+              w: actionSize.w,
+              h: actionSize.h
+            }));
+            laneUsed[lane] = true;
+            laneObstacle[lane] = true;
+            this.lastActionTrack = trackDistance;
+          }
         }
       }
     }
