@@ -12,7 +12,7 @@
   var FIXED = 1 / 60;
   var canvas = null, ctx = null;
   var viewport = { sx: 1, sy: 1 };
-  var state = 'menu';            // menu | playing | paused | gameover
+  var state = 'menu';            // menu | playing | paused | upgrade | gameover
   var modeId = 'endless';
   var run = null;
   var fx = null;
@@ -28,6 +28,8 @@
   var lastSpeedMark = 0;
   var prevJumping = false;
   var prevRolling = false;
+  var chainT = 0;                // v0.9.4：滑铲被跳跃取消后的姿态融合剩余时间
+  var upgradeMeta = { value: 0, index: 0, total: 0 };   // v0.9.4：强化三选一展示信息
   var goTimer = 0;
   var lastCountdown = null;
   var pending = null;            // 结算前的暂存
@@ -148,7 +150,8 @@
       onGoShop: function () { ui('showScreen', 'shop'); ui('refreshShop'); },
       onGoLeaderboard: function () { ui('showScreen', 'leaderboard'); ui('refreshLeaderboard', 'endless'); },
       onGoSettings: function () { ui('showScreen', 'settings'); ui('refreshSettings'); },
-      onGoHome: function () { G.goMenu(); }
+      onGoHome: function () { G.goMenu(); },
+      onUpgradePick: function (id) { return G.pickUpgrade(id); }
     };
 
     ui('init', handlers);
@@ -184,10 +187,14 @@
     lastCountdown = null;
     prevJumping = false;
     prevRolling = false;
+    chainT = 0;
+    upgradeMeta = { value: 0, index: 0, total: 0 };
     var step0 = CFG.run.speedMilestone || 2;
     lastSpeedMark = Math.floor((CFG.mode(modeId).speed.start || 6.2) / step0) * step0;
     if (fx) fx.reset();
     ui('showScreen', 'playing');
+    ui('updateUpgradeHud', []);
+    ui('hideUpgrade');
     ui('setCoins', S.coins());
     ui('showCountdown', '3');
     ui('updateHUD', run.view(), []);
@@ -219,6 +226,7 @@
     trauma = 0;
     if (fx) fx.reset();
     ui('showScreen', 'menu');
+    ui('hideUpgrade');
     ui('setCoins', S.coins());
     music('menu');
   };
@@ -431,10 +439,49 @@
           break;
         case 'combo':
           break;
+        case 'tileSkip':
+          if (!silent) {
+            if (fx) fx.text(bodyX + U.rand(null, -14, 14), bodyY - 26, '跳过 ' + e.value, { color: '#C9BBA6', size: 15 });
+          }
+          break;
+        case 'upgradeOffer':
+          if (!silent) openUpgrade();
+          break;
+        case 'upgradeTaken':
+          if (!silent) {
+            var ud = null;
+            if (NW.core && NW.core.Upgrades && NW.core.Upgrades.describe) ud = NW.core.Upgrades.describe(e.id, e.level);
+            ui('toast', '获得强化：' + (ud || e.id) + ' Lv.' + e.level);
+          }
+          break;
+        case 'cleanse':
+          if (!silent) {
+            sfx('go');
+            if (fx) {
+              fx.ring(ps.x, ps.groundY, '#9BE7FF', ps.h * 0.7);
+              fx.text(bodyX, bodyY - 40, '净化冲刺！', { color: '#9BE7FF', size: 20 });
+            }
+          }
+          break;
+        case 'shield':
+          if (!silent) {
+            sfx('shield');
+            if (fx) fx.ring(ps.x, ps.y - ps.h * 0.5, '#4FC3F7', ps.h * 0.55);
+            ui('showBanner', '护盾生成', '', { tone: 'blue', icon: 'power', duration: 800 });
+          }
+          break;
         case 'gameover':
           if (!silent) endRun(e.reason);
           break;
         case 'revive':
+          if (!silent) {
+            sfx('record');
+            haptic(30);
+            trauma = 0;
+            hitFlash = 0;
+            if (fx) fx.ring(ps.x, ps.groundY, '#FFE066', ps.h * 0.9);
+            ui('showBanner', '二次机会！', '复活并短暂无敌', { tone: 'gold', icon: 'heart', duration: 1200 });
+          }
           break;
       }
     }
@@ -453,6 +500,50 @@
     if (typeof run.action === 'function') run.action(kind);
   }
   G.action = inputAction;
+
+  /* ================= Roguelike 强化三选一（v0.9.4） ================= */
+  function upgradeTakenCount() {
+    var n = 0, ups = run && run.upgrades;
+    if (ups) { for (var k in ups) { if (Object.prototype.hasOwnProperty.call(ups, k)) n += ups[k]; } }
+    return n;
+  }
+  function openUpgrade() {
+    if (!run || !run.pendingUpgrade) return false;
+    var pu = run.pendingUpgrade;
+    if (!pu.offers || !pu.offers.length) { run.pendingUpgrade = null; return false; }
+    state = 'upgrade';
+    upgradeMeta = { value: pu.value, index: upgradeTakenCount() + 1, total: 0 };
+    ui('showUpgrade', pu.offers, upgradeMeta);
+    sfx('powerup');
+    return true;
+  }
+  G.pickUpgrade = function (id) {
+    if (state !== 'upgrade' || !run || !run.chooseUpgrade) return false;
+    var ok = false;
+    try { ok = run.chooseUpgrade(id); } catch (e) { errs.push({ msg: String(e && e.stack || e), at: 'pickUpgrade' }); return false; }
+    if (!ok) { sfx('error'); return false; }
+    sfx('buy');
+    if (run.pendingUpgrade) {
+      openUpgrade();
+    } else {
+      ui('hideUpgrade');
+      state = 'playing';
+      /* 注意：这里不再调用 ui('showScreen','playing')——它会把 HUD 强化图标行重置掉；
+       * 强化遮罩只是覆盖层，playing 屏幕一直保持激活。 */
+    }
+    if (run.upgradeList) ui('updateUpgradeHud', run.upgradeList());
+    return true;
+  };
+  G.isUpgradeOpen = function () { return state === 'upgrade'; };
+  G.getUpgradeState = function () {
+    return {
+      open: state === 'upgrade',
+      meta: { value: upgradeMeta.value, index: upgradeMeta.index, total: upgradeMeta.total },
+      offers: (run && run.pendingUpgrade && run.pendingUpgrade.offers) ? run.pendingUpgrade.offers : null,
+      taken: upgradeTakenCount(),
+      list: (run && run.upgradeList) ? run.upgradeList() : []
+    };
+  };
 
   function updateCountdown(v) {
     var label = null;
@@ -571,6 +662,7 @@
       }
       if (steps >= 6) accum = 0;
       if (events.length) processEvents(events, false);
+      if (state === 'playing' && run && run.pendingUpgrade) openUpgrade();   // v0.9.4：新数字 → 强化三选一
       if (run && state === 'playing') {
         lastView = run.view();
         updateCountdown(lastView);
@@ -589,6 +681,7 @@
         if (!prevJumping && p.jumping) {
           sfx('tap');
           if (fx) fx.ring(psx.x, psx.groundY, '#FFE066', 26);
+          if (prevRolling) chainT = CFG.run.chainBlend || 0.14;   // v0.9.4：滑铲→跳跃姿态无缝融合
         }
         if (!prevRolling && p.rolling) {
           sfx('tap');
@@ -603,6 +696,12 @@
     } else if (state === 'menu') {
       camX = U.damp(camX, 0, 6, dt);
     }
+
+    /* v0.9.4：自动试玩时自动选择强化，避免卡在三选一 */
+    if (auto && state === 'upgrade' && run && run.pendingUpgrade && run.pendingUpgrade.offers && run.pendingUpgrade.offers.length) {
+      G.pickUpgrade(run.pendingUpgrade.offers[0].id);
+    }
+    if (chainT > 0) chainT = Math.max(0, chainT - dt);
 
     if (goTimer > 0) {
       goTimer -= dt;
@@ -693,9 +792,11 @@
       else if (v.player.jumping) chState = 'jump';
       else if (v.combo >= 3) chState = 'happy';
       var chYaw = U.clamp((v.player.tilt || 0) * (CFG.run.playerYaw || 1.7), -0.4, 0.4);
+      var chainK = (chState === 'jump' && chainT > 0) ? Math.min(1, chainT / (CFG.run.chainBlend || 0.14)) : 0;
       var chOpts = {
         x: ps.x, y: ps.y, h: ps.h, state: chState, t: gameTime,
         skin: skin, lean: v.player.tilt || 0, yaw: chYaw, alpha: alpha,
+        chain: chainK, diving: !!v.player.diving,
         squash: v.player.hurt > 0 ? Math.min(0.5, v.player.hurt) : 0
       };
       if (chState === 'run' && v.mode.phase === 'intro') chOpts.state = 'idle';
