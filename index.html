@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8" />
@@ -67,6 +67,9 @@
       <span class="hud-max-tile" id="hud-max-tile">0</span>
     </div>
 
+    <!-- 右上：本局已获得强化（紧凑图标行，最多 6 个 + 「+N」溢出） -->
+    <div class="hud-upgrades" id="hud-upgrades" hidden></div>
+
     <!-- 左侧：道具剩余时间条 -->
     <div class="hud-powerups" id="hud-powerups"></div>
 
@@ -110,7 +113,7 @@
       <div class="boot-sub">跑酷 × 2048 合成</div>
       <div class="boot-spinner"><i></i></div>
       <div class="boot-tip">正在准备糖果赛道…</div>
-      <div class="boot-version" id="boot-version">v0.9.3-demo</div>
+      <div class="boot-version" id="boot-version">v0.9.4-demo</div>
     </div>
   </section>
 
@@ -205,9 +208,15 @@
     </div>
 
     <div class="menu-hint">
-      <span class="keycap">←</span><span class="keycap">→</span>
-      <span class="keycap">↑</span><span class="keycap">↓</span>
-      <span class="hint-text">或 <b>手指滑动</b> 换道 / 跳 / 滑 · 收集同数方块自动合成</span>
+      <div class="menu-hint-row">
+        <span class="keycap">←</span><span class="keycap">→</span>
+        <span class="keycap">↑</span><span class="keycap">↓</span>
+        <span class="hint-text">或 <b>手指滑动</b> 换道 / 跳 / 滑 · 收集同数方块自动合成</span>
+      </div>
+      <div class="menu-hint-row menu-hint-row--sub">
+        <span class="hint-badge">新</span>
+        <span class="hint-text">首次合成 <b>8 / 16 / 32…</b> 暂停并 <b>三选一强化</b></span>
+      </div>
     </div>
   </section>
 
@@ -358,7 +367,7 @@
         <div class="set-group-title">玩法与存档</div>
         <button class="set-link" id="btn-howto" type="button">
           <span class="set-link-ico">?</span>
-          <span class="set-link-text"><b>玩法说明</b><span>五步学会跑酷 × 合成（换道 / 跳 / 滑）</span></span>
+          <span class="set-link-text"><b>玩法说明</b><span>五步学会跑酷 × 合成 · 新数字三选一强化</span></span>
           <span class="set-link-arrow">›</span>
         </button>
         <button class="set-link set-link--danger" id="btn-reset" type="button">
@@ -375,7 +384,7 @@
         </div>
       </div>
 
-      <div class="set-version" id="set-version">《奶娃》 v0.9.3-demo · 在线排行榜 · 本地存档</div>
+      <div class="set-version" id="set-version">《奶娃》 v0.9.4-demo · 在线排行榜 · 本地存档</div>
     </div>
   </section>
 
@@ -406,7 +415,7 @@
         </li>
         <li class="tut-step">
           <div class="tut-ico tut-ico--swipe"><span>↑</span></div>
-          <div class="tut-text"><b>上滑跳跃 跨过低栏</b><p>手指上滑，或键盘 ↑ / W / 空格；可跳过黄色低栏</p></div>
+          <div class="tut-text"><b>上滑跳跃 跨过低栏</b><p>手指上滑，或键盘 ↑ / W / 空格；跳起来可跳过不想要的数字，让合成更可控</p></div>
         </li>
         <li class="tut-step">
           <div class="tut-ico tut-ico--swipe"><span>↓</span></div>
@@ -419,7 +428,7 @@
             <span class="mini-eq">=</span>
             <span class="mini-tile" style="--a1:#FFE08A;--a2:#FFC94D;--tc:#7A4E00;">4</span>
           </div>
-          <div class="tut-text"><b>收集同数 自动合成</b><p>撞到数字方块即收集，两个相同数字合成翻倍</p></div>
+          <div class="tut-text"><b>收集同数 自动合成</b><p>撞到数字方块即收集，同数合成翻倍；首次合成新数字（8/16/32…）会暂停并三选一强化</p></div>
         </li>
         <li class="tut-step">
           <div class="tut-ico tut-ico--avoid"><span class="warn-tri">!</span></div>
@@ -465,6 +474,30 @@
     </div>
   </div>
 
+  <!-- Roguelike 强化三选一（v0.9.4） -->
+  <div class="overlay overlay--upgrade" id="overlay-upgrade" aria-hidden="true">
+    <div class="modal-dim modal-dim--upgrade"></div>
+    <div class="upgrade-panel">
+      <div class="upgrade-head">
+        <span class="upgrade-badge">Roguelike 强化</span>
+        <h2 class="upgrade-title" id="upgrade-title">新数字 8！选择强化</h2>
+        <p class="upgrade-sub" id="upgrade-sub">第 1/1 次强化</p>
+      </div>
+      <div class="upgrade-cards" id="upgrade-cards"></div>
+      <div class="upgrade-hint">
+        <span class="upgrade-key">1</span>
+        <span class="upgrade-key">2</span>
+        <span class="upgrade-key">3</span>
+        <span class="upgrade-hint-sep">或</span>
+        <span class="upgrade-key">←</span>
+        <span class="upgrade-key">→</span>
+        <span class="upgrade-hint-sep">+</span>
+        <span class="upgrade-key upgrade-key--wide">Enter</span>
+        <span class="upgrade-hint-text">也可点击 / 轻触卡片</span>
+      </div>
+    </div>
+  </div>
+
 </div><!-- /#stage -->
 
 <!-- =====================================================================
@@ -475,6 +508,7 @@
 <script src="js/save.js"></script>
 <script src="js/online.js"></script>
 <script src="js/core/merge.js"></script>
+<script src="js/core/upgrades.js"></script>
 <script src="js/core/spawner.js"></script>
 <script src="js/core/run.js"></script>
 <script src="js/art/character.js"></script>
@@ -486,5 +520,6 @@
 <script src="js/main.js"></script>
 </body>
 </html>
+
 
 
