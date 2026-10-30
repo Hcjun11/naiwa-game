@@ -1647,7 +1647,254 @@
     drawTileCard(ctx, value, pCenter.x, pCenter.y, wpx);
   }
 
-  function drawObstacleEntity(ctx, S, pGround, s, e, seed, alpha) {
+  /* ======================================================================
+   * v0.9.2 动作障碍（上滑跳 / 下滑滑铲）——variant 3 低栏 / variant 4 横杆
+   * 兼容策略：e.avoid 优先；只有 variant 3/4 也能识别；两者都没有按普通障碍画。
+   * ==================================================================== */
+  function actionTypeOf(e) {
+    if (!e) return null;
+    if (e.avoid === 'jump') return 'hurdle';
+    if (e.avoid === 'slide') return 'bar';
+    var v = Math.round(Number(e.variant) || 0);
+    if (v === 3) return 'hurdle';
+    if (v === 4) return 'bar';
+    return null;
+  }
+
+  /* 动作障碍配色：跟随主题环境色，警示色保持高对比（黄黑 / 红白） */
+  var actionPalCache = {};
+  function actionPalette(th) {
+    var id = (th && th.id) || 'day';
+    if (actionPalCache[id]) return actionPalCache[id];
+    var amb = (th && th.ambient) || 'day';
+    var p;
+    if (amb === 'night') {
+      p = {
+        hurdleBar: '#FFD54F', hurdleStripe: '#141031', hurdlePost: '#5A5488', hurdlePostDark: '#3A3468',
+        barRed: '#F24822', barWhite: '#FFF6E0', barPost: '#6E6898', barPostDark: '#464070',
+        lamp: '#7EF0E0', lamp2: '#FFE066', arrow: '#CFE4FF', edge: '#1A1638'
+      };
+    } else if (amb === 'candy') {
+      p = {
+        hurdleBar: '#FFD23F', hurdleStripe: '#6B2A48', hurdlePost: '#A5698F', hurdlePostDark: '#7A4A68',
+        barRed: '#F24822', barWhite: '#FFFFFF', barPost: '#B07A9E', barPostDark: '#8A5A78',
+        lamp: '#FFE066', lamp2: '#7EE8FF', arrow: '#FFFFFF', edge: '#7A3B57'
+      };
+    } else if (amb === 'sunset') {
+      p = {
+        hurdleBar: '#FFC145', hurdleStripe: '#3E2A12', hurdlePost: '#7A4E30', hurdlePostDark: '#5A3A1E',
+        barRed: '#E8452A', barWhite: '#FFF3D6', barPost: '#B08A6A', barPostDark: '#8A6A50',
+        lamp: '#FFE6A0', lamp2: '#FF7A50', arrow: '#FFF6E0', edge: '#5A3A22'
+      };
+    } else {
+      p = {
+        hurdleBar: '#FFD23F', hurdleStripe: '#3A2A12', hurdlePost: '#6E4A2E', hurdlePostDark: '#4A3018',
+        barRed: '#F24822', barWhite: '#FFF6E0', barPost: '#9AA3B2', barPostDark: '#6E7686',
+        lamp: '#FFE066', lamp2: '#FF5252', arrow: '#FFFFFF', edge: '#4A2E10'
+      };
+    }
+    actionPalCache[id] = p;
+    return p;
+  }
+
+  /* 动作提示徽标：跳（上箭头）/ 滑（下箭头），高对比圆形底盘，一眼可读 */
+  function drawActionBadge(ctx, cx, cy, r, dir, pal, S, seed) {
+    var pulse = 0.78 + 0.22 * Math.sin(S.t * 4.2 + seed * TAU);
+    U.fillCircle(ctx, cx, cy, r, colorA(pal.arrow, 0.94 * pulse));
+    ctx.strokeStyle = colorA(pal.edge, 0.85);
+    ctx.lineWidth = Math.max(1, r * 0.18);
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, TAU);
+    ctx.stroke();
+    var a = r * 0.62;
+    ctx.strokeStyle = colorA(pal.edge, 0.92);
+    ctx.lineWidth = Math.max(1.2, r * 0.3);
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    /* 箭杆 */
+    ctx.beginPath();
+    ctx.moveTo(cx, cy + (dir > 0 ? a * 0.72 : -a * 0.72));
+    ctx.lineTo(cx, cy + (dir > 0 ? -a * 0.55 : a * 0.55));
+    ctx.stroke();
+    /* 箭头 */
+    ctx.beginPath();
+    ctx.moveTo(cx - a * 0.55, cy + (dir > 0 ? -a * 0.02 : a * 0.02));
+    ctx.lineTo(cx, cy + (dir > 0 ? -a * 0.62 : a * 0.62));
+    ctx.lineTo(cx + a * 0.55, cy + (dir > 0 ? -a * 0.02 : a * 0.02));
+    ctx.stroke();
+  }
+
+  /* variant 3 / avoid=jump：低栏。栏顶 ≈ clearY+0.03（约 0.5~0.7 世界单位），
+   * 黄黑软胶警示条纹 + 上方上箭头提示；高度全部用 project(x, y, z) 投影。 */
+  function drawActionHurdle(ctx, S, pGround, s, wWorld, e, seed, alpha, xw, z) {
+    var pal = actionPalette(S.theme);
+    var wpx = Math.max(2.5, wWorld * s);
+    /* 栏顶严格对齐碰撞高度 clearY（0.6），跳过去视觉上也刚好擦过 */
+    var topWorld = (typeof e.clearY === 'number' && e.clearY > 0.25) ? e.clearY : 0.6;
+    var barThickWorld = Math.min(0.2, Math.max(0.1, topWorld * 0.3));
+    var pTop = U.project(xw, topWorld, z, S.camX);
+    var pBarBot = U.project(xw, topWorld - barThickWorld, z, S.camX);
+    var gx = pGround.x, gy = pGround.y;
+    var topY = pTop.y, botY = pBarBot.y;
+    var barH = Math.max(2, botY - topY);
+    var halfW = wpx / 2;
+    /* 地面影子 */
+    U.fillEllipse(ctx, gx, gy, wpx * 0.52, wpx * 0.15, colorA(COL.shadow, 0.2));
+    if (wpx < 14) {
+      /* 远处简化：两条腿 + 一条黄黑横栏 */
+      var legW2 = Math.max(1, wpx * 0.09);
+      ctx.fillStyle = pal.hurdlePost;
+      ctx.fillRect(gx - halfW * 0.82 - legW2 / 2, topY, legW2, Math.max(1, gy - topY));
+      ctx.fillRect(gx + halfW * 0.82 - legW2 / 2, topY, legW2, Math.max(1, gy - topY));
+      U.fillRoundRect(ctx, gx - halfW, topY, wpx, barH, Math.max(1, barH * 0.45), pal.hurdleBar);
+      ctx.fillStyle = pal.hurdleStripe;
+      ctx.fillRect(gx - halfW * 0.28, topY, Math.max(1, wpx * 0.2), barH);
+      return;
+    }
+    /* 支腿 + 底脚 */
+    var legW = Math.max(1.6, wpx * 0.1);
+    var legInset = halfW * 0.82;
+    var legTopY = topY + barH * 0.45;
+    var i, lx;
+    for (i = 0; i < 2; i++) {
+      lx = gx + (i === 0 ? -legInset : legInset) - legW / 2;
+      U.fillRoundRect(ctx, lx, legTopY, legW, Math.max(1, gy - legTopY), legW * 0.28, pal.hurdlePost);
+      ctx.fillStyle = colorA(pal.hurdlePostDark, 0.85);
+      ctx.fillRect(lx + legW * 0.55, legTopY, legW * 0.45, Math.max(1, gy - legTopY));
+      U.fillEllipse(ctx, lx + legW / 2, gy, legW * 0.9, legW * 0.3, pal.hurdlePostDark);
+    }
+    /* 缓冲横栏：黄黑警示条纹 + 顶部高光 */
+    U.roundRectPath(ctx, gx - halfW, topY, wpx, barH, Math.max(1, barH * 0.5));
+    ctx.fillStyle = pal.hurdleBar;
+    ctx.fill();
+    ctx.save();
+    U.roundRectPath(ctx, gx - halfW, topY, wpx, barH, Math.max(1, barH * 0.5));
+    ctx.clip();
+    var sw = Math.max(2, wpx * 0.16);
+    ctx.fillStyle = pal.hurdleStripe;
+    for (var cs = -2; cs < Math.ceil(wpx / sw) + 2; cs++) {
+      var sx0 = gx - halfW + cs * sw * 2;
+      ctx.beginPath();
+      ctx.moveTo(sx0, topY + barH);
+      ctx.lineTo(sx0 + sw, topY + barH);
+      ctx.lineTo(sx0 + sw + barH, topY);
+      ctx.lineTo(sx0 + barH, topY);
+      ctx.closePath();
+      ctx.fill();
+    }
+    ctx.fillStyle = colorA('#FFFFFF', 0.3);
+    ctx.fillRect(gx - halfW, topY + barH * 0.12, wpx, Math.max(1, barH * 0.24));
+    ctx.restore();
+    U.strokeRoundRect(ctx, gx - halfW, topY, wpx, barH, Math.max(1, barH * 0.5),
+      colorA(pal.edge, 0.75), Math.max(1, wpx * 0.012));
+    /* 跳跃提示：栏上方一个「↑」徽标（呼吸闪烁） */
+    if (wpx >= 22) {
+      var badgeR = Math.max(3.5, wpx * 0.13);
+      var by2 = topY - badgeR * 1.7;
+      if (by2 > 10) drawActionBadge(ctx, gx, by2, badgeR, 1, pal, S, seed);
+    }
+  }
+
+  /* variant 4 / avoid=slide：横杆限高杆。横梁 y≈1.46~1.70（净空远大于滑铲高度），
+   * 两侧立柱 + 红白警示横梁 + 小灯 + 下方下箭头提示。 */
+  function drawActionBar(ctx, S, pGround, s, wWorld, e, seed, alpha, xw, z) {
+    var pal = actionPalette(S.theme);
+    var wpx = Math.max(2.5, wWorld * s);
+    /* 横梁 center≈1.65（1.5~1.8），底部净空 1.52 ≥ 0.9，滑铲可过 */
+    var barTopWorld = 1.78, barBotWorld = 1.52;
+    var pBarTop = U.project(xw, barTopWorld, z, S.camX);
+    var pBarBot = U.project(xw, barBotWorld, z, S.camX);
+    var gx = pGround.x, gy = pGround.y;
+    var topY = pBarTop.y, botY = pBarBot.y;
+    var barH = Math.max(2, botY - topY);
+    var halfW = wpx / 2;
+    var postW = Math.max(1.4, wpx * 0.11);
+    var postInset = halfW * 0.9;
+    /* 地面影子：横梁 + 两根立柱 */
+    U.fillEllipse(ctx, gx, gy, wpx * 0.56, wpx * 0.15, colorA(COL.shadow, 0.2));
+    U.fillEllipse(ctx, gx - postInset, gy, postW * 0.95, postW * 0.32, colorA(COL.shadow, 0.16));
+    U.fillEllipse(ctx, gx + postInset, gy, postW * 0.95, postW * 0.32, colorA(COL.shadow, 0.16));
+    if (wpx < 14) {
+      /* 远处简化：两根立柱 + 悬浮红白横梁 */
+      ctx.fillStyle = pal.barPost;
+      ctx.fillRect(gx - postInset - postW / 2, topY, Math.max(1, postW), Math.max(1, gy - topY));
+      ctx.fillRect(gx + postInset - postW / 2, topY, Math.max(1, postW), Math.max(1, gy - topY));
+      U.fillRoundRect(ctx, gx - halfW, topY, wpx, barH, Math.max(1, barH * 0.4), pal.barRed);
+      ctx.fillStyle = pal.barWhite;
+      ctx.fillRect(gx - halfW, topY + barH * 0.2, Math.max(1, wpx * 0.4), Math.max(1, barH * 0.6));
+      return;
+    }
+    /* 两根立柱：金属杆 + 反光警示带 + 底座 */
+    var i, px;
+    for (i = 0; i < 2; i++) {
+      px = gx + (i === 0 ? -postInset : postInset) - postW / 2;
+      var postTopY = topY + barH * 0.1;
+      U.fillRoundRect(ctx, px, postTopY, postW, Math.max(1, gy - postTopY), postW * 0.32, pal.barPost);
+      ctx.fillStyle = colorA(pal.barPostDark, 0.9);
+      ctx.fillRect(px + postW * 0.55, postTopY, postW * 0.45, Math.max(1, gy - postTopY));
+      var postH = gy - postTopY;
+      var bandY = postTopY + postH * 0.52;
+      ctx.fillStyle = colorA(pal.barWhite, 0.85);
+      ctx.fillRect(px, bandY, postW, Math.max(1, postH * 0.06));
+      ctx.fillRect(px, bandY + postH * 0.1, postW, Math.max(1, postH * 0.04));
+      U.fillEllipse(ctx, px + postW / 2, gy, postW * 0.9, postW * 0.26, pal.barPostDark);
+    }
+    /* 横梁：红白警示条纹 + 顶部高光 */
+    U.roundRectPath(ctx, gx - halfW, topY, wpx, barH, Math.max(1, barH * 0.42));
+    ctx.fillStyle = pal.barRed;
+    ctx.fill();
+    ctx.save();
+    U.roundRectPath(ctx, gx - halfW, topY, wpx, barH, Math.max(1, barH * 0.42));
+    ctx.clip();
+    var bw = Math.max(2, wpx * 0.14);
+    ctx.fillStyle = pal.barWhite;
+    for (var cs = -2; cs < Math.ceil(wpx / bw) + 2; cs++) {
+      var bx0 = gx - halfW + cs * bw * 2;
+      ctx.beginPath();
+      ctx.moveTo(bx0, topY + barH);
+      ctx.lineTo(bx0 + bw, topY + barH);
+      ctx.lineTo(bx0 + bw + barH * 0.7, topY);
+      ctx.lineTo(bx0 + barH * 0.7, topY);
+      ctx.closePath();
+      ctx.fill();
+    }
+    ctx.fillStyle = colorA('#FFFFFF', 0.28);
+    ctx.fillRect(gx - halfW, topY + barH * 0.1, wpx, Math.max(1, barH * 0.22));
+    ctx.restore();
+    U.strokeRoundRect(ctx, gx - halfW, topY, wpx, barH, Math.max(1, barH * 0.42),
+      colorA(pal.edge, 0.7), Math.max(1, wpx * 0.012));
+    /* 小灯（呼吸） */
+    var lampPulse = 0.6 + 0.4 * Math.sin(S.t * 5 + seed * TAU);
+    var lampR = Math.max(1.2, wpx * 0.055);
+    for (var lp = 0; lp < 3; lp++) {
+      var lx = gx + (lp - 1) * halfW * 0.6;
+      var ly = topY + barH * 0.5;
+      if (wpx > 20) drawGlow(ctx, pal.lamp, lx, ly, lampR * 3.6, 0.5 * lampPulse);
+      U.fillCircle(ctx, lx, ly, lampR, colorA(pal.lamp, 0.95));
+      U.fillCircle(ctx, lx - lampR * 0.25, ly - lampR * 0.25, lampR * 0.4, colorA('#FFFFFF', 0.9));
+    }
+    /* 下滑提示：横梁下方一个「↓」徽标（呼吸闪烁） */
+    if (wpx >= 22) {
+      var badgeR = Math.max(3.5, wpx * 0.13);
+      var bby = botY + badgeR * 1.75;
+      if (bby < H - 8) drawActionBadge(ctx, gx, bby, badgeR, -1, pal, S, seed);
+    }
+  }
+
+  function drawObstacleEntity(ctx, S, pGround, s, e, seed, alpha, xw, z) {
+    /* v0.9.2 动作障碍：avoid 优先、variant 3/4 兼容；字段缺失一律按普通障碍处理 */
+    var action = actionTypeOf(e);
+    if (typeof xw !== 'number' || !isFinite(xw)) {
+      xw = (pGround.x - W / 2) / s + (S.camX || 0);
+    }
+    if (typeof z !== 'number' || !isFinite(z)) z = 0;
+    if (action) {
+      var wAction = (typeof e.w === 'number' && e.w > 0.5) ? Math.min(2.0, e.w) : (action === 'hurdle' ? 1.2 : 1.3);
+      if (wAction * s < 2.2) return;
+      if (action === 'hurdle') drawActionHurdle(ctx, S, pGround, s, wAction, e, seed, alpha, xw, z);
+      else drawActionBar(ctx, S, pGround, s, wAction, e, seed, alpha, xw, z);
+      return;
+    }
     var w = (typeof e.w === 'number' && e.w > 0 ? e.w : V.obstacleW) * s;
     var h = (typeof e.h === 'number' && e.h > 0 ? e.h : V.obstacleH) * s;
     if (w < 2.5 || h < 3) return;
@@ -2022,7 +2269,7 @@
         /* 只设置 globalAlpha，不逐个实体 save/restore（实体绘制内部按需 save） */
         ctx.globalAlpha = alpha;
         if (kind2 === 'tile') drawTileEntity(ctx, S, pGround, pCenter, s, e, seed);
-        else if (kind2 === 'obstacle') drawObstacleEntity(ctx, S, pGround, s, e, seed, alpha);
+        else if (kind2 === 'obstacle') drawObstacleEntity(ctx, S, pGround, s, e, seed, alpha, x, z);
         else if (kind2 === 'coin') drawCoinEntity(ctx, S, pGround, pCenter, s, seed);
         else drawPowerEntity(ctx, S, pGround, pCenter, s, e, seed);
       }
@@ -2048,7 +2295,7 @@
 
   var art = NW.art || (NW.art = {});
   art.World = {
-    version: '1.2.0',
+    version: '1.3.0',
     drawBackground: drawBackground,
     drawRoad: drawRoad,
     drawProps: drawProps,
