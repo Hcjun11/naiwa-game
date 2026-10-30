@@ -585,7 +585,9 @@
     dizzy: { eye: 'x', eyeY: 7.6, mouth: 'wavy', mouthY: 15.8, mouthScale: 0.95 },
     star: { eye: 'star', eyeY: 7.8, mouth: 'grin', mouthY: 15.6, mouthScale: 0.78 },
     jump: { eye: 'wide', eyeY: 6.4, eyeR: [3.4, 3.7], mouth: 'laugh', mouthY: 15.2, mouthScale: 0.62 },
-    slide: { eye: 'focus', eyeY: 9.0, mouth: 'smile', mouthY: 16.6, mouthScale: 0.9 }
+    slide: { eye: 'focus', eyeY: 9.0, mouth: 'smile', mouthY: 16.6, mouthScale: 0.9 },
+    /* v0.9.4 空中下滑：专注瞪视 + 抿嘴（比滑铲更绷紧） */
+    dive: { eye: 'focus', eyeY: 8.6, eyeR: [3.25, 1.7], mouth: 'smile', mouthY: 16.2, mouthScale: 0.86 }
   };
 
   var FACE_BY_STATE = {
@@ -608,14 +610,86 @@
   }
 
   /* ======================================================================
+   * 4.5 姿态/表情插值（v0.9.4：opts.chain 滑铲→跳跃融合、opts.diving 空中下滑）
+   * ==================================================================== */
+  function lerpN(a, b, t) { return a + (b - a) * t; }
+  function mixPoint(A, B, t) { return [A[0] + (B[0] - A[0]) * t, A[1] + (B[1] - A[1]) * t]; }
+  /* 腿部姿态（髋/膝/踝/脚掌旋转/三段宽度）之间的融合 */
+  function mixLeg(A, B, t) {
+    return {
+      hip: mixPoint(A.hip, B.hip, t),
+      knee: mixPoint(A.knee, B.knee, t),
+      ank: mixPoint(A.ank, B.ank, t),
+      rot: lerpN(A.rot, B.rot, t),
+      w: [lerpN(A.w[0], B.w[0], t), lerpN(A.w[1], B.w[1], t), lerpN(A.w[2], B.w[2], t)]
+    };
+  }
+
+  /* 两套动画参数之间线性融合（滑铲蹲伏 ↔ 跳跃） */
+  var POSE_NUM_KEYS = ['bob', 'jelly', 'arm', 'armSwing', 'armPhase', 'legLift', 'legPhase',
+    'legSwingX', 'legSpread', 'bellyWobble', 'faceTilt', 'faceY', 'stretchY', 'stretchX',
+    'glow', 'shake', 'armVal', 'legVal'];
+  function blendPose(A, B, t) {
+    var out = {}, k, i, f;
+    for (k in A) {
+      if (Object.prototype.hasOwnProperty.call(A, k)) out[k] = A[k];
+    }
+    for (i = 0; i < POSE_NUM_KEYS.length; i++) {
+      f = POSE_NUM_KEYS[i];
+      var av = A[f], bv = B[f];
+      if (typeof av === 'number' && typeof bv === 'number') out[f] = lerpN(av, bv, t);
+      else if (bv !== undefined) out[f] = bv;
+    }
+    return out;
+  }
+
+  /* 滑铲 ↔ 跳跃表情融合：眼睛从细眯连续放大、嘴从小 grin 张开（无跳变） */
+  function blendExpr(fromE, toE, t) {
+    var fromR = fromE.eyeR || [3.2, 1.55];
+    var toR = toE.eyeR || [3.4, 3.7];
+    return {
+      eye: 'focus',
+      eyeY: lerpN(fromE.eyeY || 8.4, toE.eyeY || 6.4, t),
+      eyeR: [lerpN(fromR[0], toR[0], t), lerpN(fromR[1], toR[1], t)],
+      lid: 1 - t,
+      mouth: 'grin',
+      mouthY: lerpN(fromE.mouthY || 16.6, toE.mouthY || 15.2, t),
+      mouthScale: lerpN(0.5, toE.mouthScale || 0.62, t)
+    };
+  }
+
+  /* 状态切换过渡：只对 jump/slide/dive 相关切换做几帧阻尼，避免姿态硬切；
+     同状态连续帧 / 静态单帧渲染直接快照 → 不改变旧行为 */
+  var SMOOTH_KEYS = ['armVal', 'legVal', 'stretchY', 'stretchX', 'faceY', 'faceTilt'];
+  function smoothStatePose(ctx, p, t, stateKey) {
+    var airState = stateKey.indexOf('jump') === 0 || stateKey.indexOf('slide') === 0;
+    var c = ctx.__nwCharSmooth;
+    var snap = { key: stateKey, t: t, vals: {} };
+    var i, key;
+    for (i = 0; i < SMOOTH_KEYS.length; i++) snap.vals[SMOOTH_KEYS[i]] = p[SMOOTH_KEYS[i]];
+    if (c && airState && c.key !== stateKey && t > c.t && (t - c.t) < 0.30) {
+      var k = 1 - Math.exp(-30 * (t - c.t));
+      for (i = 0; i < SMOOTH_KEYS.length; i++) {
+        key = SMOOTH_KEYS[i];
+        var prev = c.vals[key], tgt = p[key];
+        if (typeof prev !== 'number' || typeof tgt !== 'number') continue;
+        p[key] = prev + (tgt - prev) * k;
+        snap.vals[key] = p[key];
+      }
+    }
+    ctx.__nwCharSmooth = snap;
+    return p;
+  }
+
+  /* ======================================================================
    * 5. 动画参数
    * ==================================================================== */
   function stateAnim(state, t) {
     var s = Math.sin, a = Math.abs;
     var p = {
       bob: 0, jelly: 0,
-      arm: 0, armSwing: 0, armPhase: 0, armPose: 'rest',
-      legPose: 'rest', legLift: 0, legPhase: 14, legSwingX: 0, legSpread: 0,
+      arm: 0, armSwing: 0, armPhase: 0, armVal: 1,      /* armVal: 0=举手 / 1=自然下垂 / 2=后摆 */
+      legVal: 1, legLift: 0, legPhase: 14, legSwingX: 0, legSpread: 0,  /* legVal: 0=收腿 / 1=站立 / 2=滑铲张开 / 3=并拢下压 */
       bellyWobble: 0, faceTilt: 0, faceY: 0,
       stretchY: 1, stretchX: 1,
       glow: 0, shake: 0
@@ -655,7 +729,7 @@
         break;
       case 'levelup':
         p.bob = 1.6 + a(s(t * 4.6)) * 3.2;
-        p.armPose = 'up'; p.arm = 0.1; p.armSwing = 0.14; p.armPhase = 9.0;
+        p.armVal = 0; p.arm = 0.1; p.armSwing = 0.14; p.armPhase = 9.0;
         p.legLift = 2.0; p.legPhase = 4.6;
         p.bellyWobble = a(s(t * 9 + 0.3)) * 0.05;
         p.glow = 0.85 + 0.15 * s(t * 5);
@@ -664,8 +738,8 @@
       case 'jump':
         /* 收腿 / 手臂上扬 / 身体拉长 / 兴奋张嘴 */
         p.bob = 0.8 + s(t * 9) * 0.5;
-        p.armPose = 'up'; p.arm = 0.12; p.armSwing = 0.1; p.armPhase = 9;
-        p.legPose = 'tuck';
+        p.armVal = 0; p.arm = 0.12; p.armSwing = 0.1; p.armPhase = 9;
+        p.legVal = 0;
         p.stretchY = 1.06; p.stretchX = 0.97;
         p.bellyWobble = a(s(t * 11)) * 0.035;
         p.faceTilt = -0.05; p.faceY = -0.8;
@@ -674,12 +748,22 @@
       case 'slide':
         /* 压低前倾 / 手臂后摆 / 眯眼专注 */
         p.bob = -0.6;
-        p.armPose = 'back'; p.arm = 0.1; p.armSwing = 0.08; p.armPhase = 11;
-        p.legPose = 'splay';
+        p.armVal = 2; p.arm = 0.1; p.armSwing = 0.08; p.armPhase = 11;
+        p.legVal = 2;
         p.stretchY = 0.9; p.stretchX = 1.06;
         p.bellyWobble = a(s(t * 13)) * 0.03;
         p.faceTilt = 0.07; p.faceY = 1.0;
         p.jelly = s(t * 13) * 0.01;
+        break;
+      case 'dive':
+        /* v0.9.4 空中下滑：身体前倾 / 手臂后摆 / 双腿并拢下压 / 专注 */
+        p.bob = 1.2 + s(t * 9) * 0.4;
+        p.armVal = 1.9; p.arm = 0.1; p.armSwing = 0.06; p.armPhase = 9;
+        p.legVal = 3;
+        p.stretchY = 1.0; p.stretchX = 0.98;
+        p.bellyWobble = a(s(t * 12)) * 0.03;
+        p.faceTilt = 0.14; p.faceY = 1.5;
+        p.jelly = s(t * 12) * 0.01;
         break;
       default: /* idle */
         p.bob = 0.35 + s(t * 1.7) * 0.35;
@@ -710,29 +794,31 @@
       var ph = Math.sin(t * p.legPhase + (side < 0 ? 0 : Math.PI));
       var lift = Math.max(0, ph) * p.legLift;
       var dx = ph * p.legSwingX;
-      var hipX, hipY, kneeX, kneeY, ankX, ankY, footRot, widths;
-
-      if (p.legPose === 'tuck') {
-        /* 跳跃收腿：膝盖外翻、脚掌收到身体下方并翘起 */
-        hipX = side * (10.4 + p.legSpread * 0.5); hipY = 63.2;
-        kneeX = side * 14.8; kneeY = 72.4;
-        ankX = side * 15.4; ankY = 81.0;
-        footRot = side * 0.42;
-        widths = [17.0, 15.0, 11.0];
-      } else if (p.legPose === 'splay') {
-        /* 滑铲：双腿向两侧张开、脚掌外撇 */
-        hipX = side * (11.0 + p.legSpread * 0.5); hipY = 63.0;
-        kneeX = side * 15.8; kneeY = 76.4;
-        ankX = side * 20.6; ankY = 90.2;
-        footRot = side * 0.34;
-        widths = [17.2, 15.0, 10.8];
-      } else {
-        hipX = side * (10.8 + p.legSpread * 0.5); hipY = 63.6;
-        kneeX = side * 13.2 + dx * 0.5; kneeY = 78.2;
-        ankX = side * 12.2 + dx; ankY = 92.5 - lift;
-        footRot = side * 0.02 + ph * 0.08;
-        widths = [17.2, 14.6, 11.2];
-      }
+      /* v0.9.4：legVal 0=收腿 / 1=站立 / 2=滑铲张开 / 3=dive 并拢下压，中间值线性融合 */
+      var legVal = (typeof p.legVal === 'number') ? clamp(p.legVal, 0, 3) : 1;
+      var spread = p.legSpread * 0.5;
+      var tTuck = {
+        hip: [side * (10.4 + spread), 63.2], knee: [side * 14.8, 72.4],
+        ank: [side * 15.4, 81.0], rot: side * 0.42, w: [17.0, 15.0, 11.0]
+      };
+      var tRest = {
+        hip: [side * (10.8 + spread), 63.6], knee: [side * 13.2 + dx * 0.5, 78.2],
+        ank: [side * 12.2 + dx, 92.5 - lift], rot: side * 0.02 + ph * 0.08, w: [17.2, 14.6, 11.2]
+      };
+      var tSplay = {
+        hip: [side * (11.0 + spread), 63.0], knee: [side * 15.8, 76.4],
+        ank: [side * 20.6, 90.2], rot: side * 0.34, w: [17.2, 15.0, 10.8]
+      };
+      var tDive = {
+        hip: [side * (8.6 + spread), 64.0], knee: [side * 8.0, 79.2],
+        ank: [side * 7.4, 95.8], rot: side * 0.10, w: [16.6, 14.0, 10.6]
+      };
+      var T;
+      if (legVal <= 1) T = mixLeg(tTuck, tRest, legVal);
+      else if (legVal <= 2) T = mixLeg(tRest, tSplay, legVal - 1);
+      else T = mixLeg(tSplay, tDive, legVal - 2);
+      var hipX = T.hip[0], hipY = T.hip[1], kneeX = T.knee[0], kneeY = T.knee[1];
+      var ankX = T.ank[0], ankY = T.ank[1], footRot = T.rot, widths = T.w;
 
       /* yaw：远侧腿向内收（被身体遮挡更多），近侧腿略向外 */
       var inward = isFar ? -side * 1.7 * yawK : side * 0.6 * yawK;
@@ -812,16 +898,22 @@
     }
   }
 
-  /* ---- 手臂点位：上臂（藏身后）、肘、手（贴肚皮） ---- */
-  /* ---- 手臂点位：上臂（藏身后）、肘、手（贴肚皮）；xShift 用于 yaw 转向时整体贴向身体 ---- */
-  function armPoints(side, a, pose, xShift) {
+  /* ---- 手臂点位（v0.9.4：数值姿态 armVal 0=举手 / 1=自然下垂 / 2=后摆，中间值融合） ---- */
+  var ARM_UP = { S: [12.4, 34.0], P: [23.0, 30.4], H: [25.4, 19.2] };
+  var ARM_REST = { S: [12.4, 34.2], P: [24.6, 39.6], H: [11.8, 47.6] };
+  var ARM_BACK = { S: [12.4, 35.4], P: [23.2, 42.4], H: [26.6, 49.0] };
+  function armPoints(side, a, armVal, xShift) {
+    var v = clamp((typeof armVal === 'number') ? armVal : 1, 0, 2);
     var S, P, H;
-    if (pose === 'up') {
-      S = [12.4, 34.0]; P = [23.0, 30.4]; H = [25.4, 19.2];
-    } else if (pose === 'back') {
-      S = [12.4, 35.4]; P = [23.2, 42.4]; H = [26.6, 49.0];
+    if (v <= 1) {
+      S = mixPoint(ARM_UP.S, ARM_REST.S, v);
+      P = mixPoint(ARM_UP.P, ARM_REST.P, v);
+      H = mixPoint(ARM_UP.H, ARM_REST.H, v);
     } else {
-      S = [12.4, 34.2]; P = [24.6, 39.6]; H = [11.8, 47.6];
+      var u = v - 1;
+      S = mixPoint(ARM_REST.S, ARM_BACK.S, u);
+      P = mixPoint(ARM_REST.P, ARM_BACK.P, u);
+      H = mixPoint(ARM_REST.H, ARM_BACK.H, u);
     }
     var sh = xShift || 0;
     S = [side * S[0] + sh, S[1]];
@@ -909,10 +1001,12 @@
     };
   }
 
-  /* ---- 手臂后层：上臂（藏身后）；slide 时整条手臂都在身后；
-          yaw 转向时只画「远侧」整条手臂（被身体遮挡），近侧改到前层整条绘制 ---- */
+  /* ---- 手臂后层：上臂（藏身后）；armVal≥1.55（滑铲 / dive）时整条手臂都在身后；
+          yaw 转向时远侧也整条藏在身后 ---- */
   function drawArmsBack(ctx, skin, G, t, p, yaw) {
     var info = armYawInfo(yaw);
+    var armVal = (typeof p.armVal === 'number') ? p.armVal : 1;
+    var armsBehind = armVal >= 1.55;
     var i, side;
     for (i = 0; i < 2; i++) {
       side = i === 0 ? -1 : 1;
@@ -920,14 +1014,14 @@
       var phase = Math.sin(t * p.armPhase + (i === 0 ? 0 : Math.PI));
       var a = p.arm + p.armSwing * phase;
       var xShift = info.active ? (-side * (isFar ? 1.0 : 2.4) * info.yawK) : 0;
-      var A = armPoints(side, a, p.armPose, xShift);
+      var A = armPoints(side, a, armVal, xShift);
 
       /* 上臂：肩 → 肘（大部分被身体挡住，只在身体轮廓外露出小肩头） */
       var upPts = [A.S, [(A.S[0] + A.P[0]) / 2 + side * 0.6, (A.S[1] + A.P[1]) / 2 - 0.6], A.P];
       strokeTaper(ctx, upPts, [13.6, 12.2, 10.4], isFar ? G.armFar : G.arm);
 
-      if (p.armPose === 'back' || isFar) {
-        /* 滑铲 / yaw 远侧：前臂与手也画在身后，形成「手臂后摆 / 被身体遮挡」 */
+      if (armsBehind || isFar) {
+        /* 滑铲 / dive / yaw 远侧：前臂与手也画在身后，形成「手臂后摆 / 被身体遮挡」 */
         var faPts = [A.P, [(A.P[0] + A.H[0]) / 2, (A.P[1] + A.H[1]) / 2 + 0.4], A.H];
         strokeTaper(ctx, faPts, [10.4, 9.4, 8.2], isFar ? G.forearmFar : G.forearm);
         ctx.save();
@@ -938,9 +1032,10 @@
     }
   }
 
-  /* ---- 手臂前层：前臂 + 手（自然搭在肚皮两侧；yaw 时远侧交给后层） ---- */
+  /* ---- 手臂前层：前臂 + 手（自然搭在肚皮两侧；滑铲/dive 时手臂整条在身后） ---- */
   function drawArmsFront(ctx, skin, G, t, p, yaw) {
-    if (p.armPose === 'back') return;
+    var armVal = (typeof p.armVal === 'number') ? p.armVal : 1;
+    if (armVal >= 1.55) return;
     var info = armYawInfo(yaw);
     var i, side;
     for (i = 0; i < 2; i++) {
@@ -949,7 +1044,7 @@
       var phase = Math.sin(t * p.armPhase + (i === 0 ? 0 : Math.PI));
       var a = p.arm + p.armSwing * phase;
       var xShift = info.active ? (-side * 2.4 * info.yawK) : 0;
-      var A = armPoints(side, a, p.armPose, xShift);
+      var A = armPoints(side, a, armVal, xShift);
       var P = A.P, H = A.H;
 
       var faPts = [P, [(P[0] + H[0]) / 2, (P[1] + H[1]) / 2 + 0.5], H];
@@ -1197,25 +1292,31 @@
         ctx.quadraticCurveTo(x, ey + 2.4 - bow, x + span, ey + 2.4);
         ctx.stroke();
       } else if (E.eye === 'focus') {
-        /* 专注眯眼：细长眼 + 高光 */
+        /* 专注眯眼（v0.9.4：半径/眼皮参数化，供 chain 表情连续插值） */
+        var frx = E.eyeR ? E.eyeR[0] : 3.2;
+        var fry = E.eyeR ? E.eyeR[1] : 1.55;
+        var lid = (E.lid === undefined || E.lid === null) ? 1 : clamp(E.lid, 0, 1);
+        var glint = Math.max(0.55, Math.min(frx, fry) * 0.48);
         ctx.save();
         ctx.translate(x, ey);
         ctx.fillStyle = G.eye;
         ctx.beginPath();
-        ctx.ellipse(0, 0, 3.2, 1.55, 0, 0, Math.PI * 2);
+        ctx.ellipse(0, 0, frx, fry, 0, 0, Math.PI * 2);
         ctx.fill();
         ctx.fillStyle = skin.teeth;
         ctx.beginPath();
-        ctx.arc(-0.8, -0.2, 0.75, 0, Math.PI * 2);
+        ctx.arc(-frx * 0.25, -fry * 0.13, glint, 0, Math.PI * 2);
         ctx.fill();
-        /* 上眼皮压线 */
-        ctx.strokeStyle = rgba(darken(skin.eye, 0.1), 0.7);
-        ctx.lineWidth = 0.9;
-        ctx.lineCap = 'round';
-        ctx.beginPath();
-        ctx.moveTo(-3.3, -0.7);
-        ctx.quadraticCurveTo(0, -1.9, 3.3, -0.7);
-        ctx.stroke();
+        /* 上眼皮压线（lid=1 明显；lid→0 时消失、眼睛放大） */
+        if (lid > 0.05) {
+          ctx.strokeStyle = rgba(darken(skin.eye, 0.1), 0.7 * lid);
+          ctx.lineWidth = 0.9;
+          ctx.lineCap = 'round';
+          ctx.beginPath();
+          ctx.moveTo(-frx * 1.03, -fry * 0.45);
+          ctx.quadraticCurveTo(0, -fry * 1.25, frx * 1.03, -fry * 0.45);
+          ctx.stroke();
+        }
         ctx.restore();
       } else if (E.eye === 'x') {
         ctx.strokeStyle = skin.eye;
@@ -1400,7 +1501,8 @@
 
   /* ---- 脸部整体 ---- */
   function drawFace(ctx, skin, G, face, blink, p, yaw) {
-    var E = EXPR[face] || EXPR.smile;
+    /* face 可以是 EXPR 名字，也可以是 blendExpr() 产出的对象（chain 融合表情） */
+    var E = (face && typeof face === 'object') ? face : (EXPR[face] || EXPR.smile);
     var i, side;
     var yawK = clamp((yaw || 0) / 0.4, -1, 1);
 
@@ -1498,15 +1600,32 @@
     var skin = opts.skin || SKIN_FALLBACK;
     var lean = opts.lean || 0;
     var yaw = clamp(opts.yaw || 0, -0.5, 0.5);   /* v0.9.3：换道转向（弧度，默认 0） */
+    /* v0.9.4：chain（滑铲被跳跃取消的融合系数 1→0）、diving（空中下滑姿态） */
+    var chain = clamp((opts.chain === undefined || opts.chain === null) ? 0 : opts.chain, 0, 1);
+    var diving = !!opts.diving;
     var alpha = (opts.alpha === undefined || opts.alpha === null) ? 1 : opts.alpha;
     var squash = clamp(opts.squash || 0, 0, 1);
-    var face = opts.face || FACE_BY_STATE[state] || 'smile';
     var blink = opts.blink;
     if (blink === undefined || blink === null) blink = autoBlink(t, 0);
     blink = clamp(blink, 0, 1);
     if (alpha <= 0.003 || h <= 0.5) return;
 
-    var p = stateAnim(state, t);
+    /* 姿态：diving 优先（空中下滑）；否则 chain>0 时在滑铲蹲伏与跳跃之间插值 */
+    var p, face;
+    if (diving && state !== 'slide') {
+      p = stateAnim('dive', t);
+      face = 'dive';
+    } else if (state === 'jump' && chain > 0.001) {
+      var tJump = 1 - chain;                 /* 0 = 滑铲蹲伏，1 = 跳跃 */
+      p = blendPose(stateAnim('slide', t), stateAnim('jump', t), tJump);
+      face = blendExpr(EXPR.slide, EXPR.jump, tJump);
+    } else {
+      p = stateAnim(state, t);
+      face = FACE_BY_STATE[state] || 'smile';
+    }
+    if (opts.face) face = opts.face;
+    var stateKey = state + (diving ? '|dive' : '') + (chain > 0.001 ? '|c' : '');
+    p = smoothStatePose(ctx, p, t, stateKey);
     var G = skinGrads(ctx, skin);
 
     var s = h / 100;
