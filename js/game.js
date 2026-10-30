@@ -26,6 +26,8 @@
   var trauma = 0, traumaT = 0;
   var hitFlash = 0;
   var lastSpeedMark = 0;
+  var prevJumping = false;
+  var prevRolling = false;
   var goTimer = 0;
   var lastCountdown = null;
   var pending = null;            // 结算前的暂存
@@ -63,9 +65,13 @@
   function playerScreen() {
     var v = lastView;
     var px = v ? v.player.x : 0;
+    var py = v ? (v.player.y || 0) : 0;
+    var scale = U.projectScale(0);
     var p = prj(px, 0, 0);
-    var h = CFG.world.playerHeight * U.projectScale(0);
-    return { x: p.x, y: p.y, h: h, top: p.y - h };
+    var groundY = p.y + (CFG.run.playerOffsetY || 0);
+    var h = CFG.world.playerHeight * scale * (CFG.run.playerScale || 1);
+    if (v && v.player.rolling) h *= (CFG.run.slide && CFG.run.slide.heightScale) || 0.55;
+    return { x: p.x, y: groundY - py * scale, groundY: groundY, h: h, top: groundY - py * scale - h, scale: scale };
   }
 
   /* ================= 初始化 ================= */
@@ -176,6 +182,8 @@
     hitFlash = 0;
     goTimer = 0;
     lastCountdown = null;
+    prevJumping = false;
+    prevRolling = false;
     var step0 = CFG.run.speedMilestone || 2;
     lastSpeedMark = Math.floor((CFG.mode(modeId).speed.start || 6.2) / step0) * step0;
     if (fx) fx.reset();
@@ -439,6 +447,12 @@
     run.input(dir);
   }
   G.input = inputLane;
+  function inputAction(kind) {
+    if (state !== 'playing' || !run) return;
+    if (kind !== 'jump' && kind !== 'slide') return;
+    if (typeof run.action === 'function') run.action(kind);
+  }
+  G.action = inputAction;
 
   function updateCountdown(v) {
     var label = null;
@@ -453,6 +467,15 @@
   }
 
   /* ================= 自动试玩（调试/QA 用） ================= */
+  function nearestObstacle(ents, lane, range) {
+    var best = null;
+    for (var i = 0; i < ents.length; i++) {
+      var e = ents[i];
+      if (e.kind !== 'obstacle' || e.lane !== lane || e.z < 0.2 || e.z > range) continue;
+      if (!best || e.z < best.z) best = e;
+    }
+    return best;
+  }
   function hazardAhead(ents, lane, range) {
     for (var i = 0; i < ents.length; i++) {
       var e = ents[i];
@@ -475,10 +498,22 @@
     var v = run.view();
     var p = v.player;
     var ents = v.entities;
-    if (hazardAhead(ents, p.lane, 27)) {
+    // 地铁跑酷式：优先用跳跃/滑铲处理当前车道动作障碍
+    var ob = nearestObstacle(ents, p.lane, 30);
+    if (ob && ob.avoid) {
+      if (ob.avoid === 'jump') {
+        if (p.y <= 0 && !p.rolling && ob.z <= Math.max(2.6, v.speed * 0.30)) run.action('jump');
+        return;
+      }
+      if (ob.avoid === 'slide') {
+        if (p.y <= 0 && !p.rolling && ob.z <= Math.max(2.2, v.speed * 0.22)) run.action('slide');
+        return;
+      }
+    }
+    if (hazardAhead(ents, p.lane, 16)) {
       var opts = [];
       for (var l = 0; l < 3; l++) {
-        if (l === p.lane || hazardAhead(ents, l, 28)) continue;
+        if (l === p.lane || hazardAhead(ents, l, 18)) continue;
         var sc = 0;
         if (nearestInLane(ents, l, 'tile', 24) < 1e9) sc += 2;
         if (nearestInLane(ents, l, 'power', 24) < 1e9) sc += 3;
@@ -549,6 +584,18 @@
         }
         var p = lastView.player;
         camX = U.damp(camX, p.x * CFG.cam.followX, 9, dt);
+        // 跳跃 / 滑铲起手反馈
+        var psx = playerScreen();
+        if (!prevJumping && p.jumping) {
+          sfx('tap');
+          if (fx) fx.ring(psx.x, psx.groundY, '#FFE066', 26);
+        }
+        if (!prevRolling && p.rolling) {
+          sfx('tap');
+          if (fx) fx.burst(psx.x, psx.y - 6, { color: '#E8C48A', color2: '#FFFFFF', count: 8, speed: 110, size: 5, life: 0.32, gravity: 140, shape: 'circle' });
+        }
+        prevJumping = !!p.jumping;
+        prevRolling = !!p.rolling;
         hudTick++;
         if (hudTick % 1 === 0) ui('updateHUD', lastView, events);
       }
@@ -633,13 +680,17 @@
     };
     if (NW.art.World.drawEntities) NW.art.World.drawEntities(ctx, sceneAhead);
 
-    // 玩家角色（受击不再闪烁，无敌期间保持正常显示，方便看清换道）
+    // 玩家角色（缩小 + 下移，避免遮挡前方数字；受击不再闪烁）
     var ps = playerScreen();
     var alpha = 1;
+    var jumpY = (v.player.y || 0);
     if (NW.art.Character) {
-      if (NW.art.Character.drawShadow) NW.art.Character.drawShadow(ctx, ps.x, ps.y, ps.h * 0.32, 0.22);
+      var shadowScale = Math.max(0.45, 1 - jumpY * 0.55);
+      if (NW.art.Character.drawShadow) NW.art.Character.drawShadow(ctx, ps.x, ps.groundY, ps.h * 0.32 * shadowScale, 0.22 * shadowScale);
       var chState = 'run';
       if (v.player.hurt > 0.05) chState = 'hit';
+      else if (v.player.rolling) chState = 'slide';
+      else if (v.player.jumping) chState = 'jump';
       else if (v.combo >= 3) chState = 'happy';
       var chOpts = {
         x: ps.x, y: ps.y, h: ps.h, state: chState, t: gameTime,
