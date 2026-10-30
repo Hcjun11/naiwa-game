@@ -6,13 +6,13 @@
  *   var sp = new NW.core.Spawner({ rng, mode });   // rng 必传，保证同 seed 可复现
  *   sp.reset()
  *   sp.rowGap(speed) -> number                      // 行距（米，已 clamp）
- *   sp.spawnRow(trackDistance, z, {power:boolean})  // -> {entities, powerSpawned, ordinal, trackDistance}
+ *   sp.spawnRow(trackDistance, z, {power, luck})    // -> {entities, powerSpawned, ordinal, trackDistance}
  *   sp.prefill(speed) -> Entity[]                   // 开局预填充（由近到远生成，rowOrdinal 即遭遇顺序）
  *   sp.rowOrdinal / sp.trail / sp.nextId
  *
- * 生成不变量（SPEC 1.3 / 3.6 / v0.9.2 §2.4）：
+ * 生成不变量（SPEC 1.3 / 3.6 / v0.9.2 §2.4 / v0.9.4）：
  *   - 每行障碍 ≤ 2，且永远至少留 1 条完全无障碍的安全跑道；
- *   - 数字方块不与同行障碍同道，每行 1~2 个；
+ *   - 数字方块不与同行障碍同道，每行 1~2 个；v0.9.4 幸运方块：luck 命中时数值翻倍（上限 16）；
  *   - 前 CFG.spawn.graceRows 行 且 前 CFG.run.graceDistance 米只出方块不出障碍；
  *   - 金币可连续 coinTrailRows 行排成同列“金条”（coinTrailValue 价值更高）；
  *   - 道具按 Run 的 22~34s 计时请求生成，放在本行空闲跑道；
@@ -135,7 +135,9 @@
    * 生成一行实体。
    * @param {number} trackDistance 该行在赛道上的里程（米，用于难度曲线与 grace 判定）
    * @param {number} z 生成时的世界 z 坐标（通常 = CFG.world.spawnZ）
-   * @param {{power?:boolean}} [opts] power=true 时尝试在本行放一个道具
+   * @param {{power?:boolean, luck?:number}} [opts]
+   *        power=true 时尝试在本行放一个道具；
+   *        luck=v0.9.4 幸运方块概率（0~1，来自强化），命中时数字数值翻倍（上限 16）。
    * @returns {{entities:Array, powerSpawned:boolean, ordinal:number, trackDistance:number}}
    */
   Spawner.prototype.spawnRow = function (trackDistance, z, opts) {
@@ -216,11 +218,17 @@
     if (tileCount > freeLanes.length) tileCount = freeLanes.length;
     if (tileCount < 1) tileCount = 1;
     var weights = (this.mode && this.mode.id === 'sprint') ? spawn.sprintTileWeights : spawn.tileWeights;
+    var luck = (typeof opts.luck === 'number' && isFinite(opts.luck)) ? U.clamp(opts.luck, 0, 1) : 0;
     var tileLanes = U.shuffle(freeLanes, rng);
     for (i = 0; i < tileCount; i++) {
       lane = tileLanes[i];
       laneUsed[lane] = true;
-      entities.push(makeTile(this, lane, z, U.weightedPick(weights, rng)));
+      var tileValue = U.weightedPick(weights, rng);
+      /* v0.9.4 幸运方块：概率翻倍（上限 16；32 等更高档不再翻倍） */
+      if (luck > 0 && tileValue < 16 && U.chance(luck, rng)) {
+        tileValue = Math.min(tileValue * 2, 16);
+      }
+      entities.push(makeTile(this, lane, z, tileValue));
     }
 
     /* ---------- 3) 金币 / 金条 ---------- */
