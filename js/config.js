@@ -8,7 +8,7 @@
   var CFG = (NW.CFG = {});
 
   /* ---------- 基础信息 ---------- */
-  CFG.version = '0.9.1-demo';
+  CFG.version = '0.9.2-demo';
   CFG.title = '奶娃';
   CFG.subtitle = '跑酷 × 2048 合成';
   CFG.tagline = '轻松上手 · 策略合成 · 短局挑战';
@@ -70,6 +70,11 @@
     speedMilestone: 2.0,     // 速度每提升 2 m/s 弹出一次「加速」提示
     hurtSlowMul: 0.72,       // 受击瞬间减速倍率
     hurtSlowTime: 0.55,
+    /* ---- 地铁跑酷式操作：上滑跳跃 / 下滑滑铲 ---- */
+    playerScale: 0.70,       // 游戏内角色渲染缩小（解决人物太大遮挡数字）
+    playerOffsetY: 82,       // 角色脚底相对投影点下移（像素，贴近屏幕下方）
+    jump: { velocity: 5.2, gravity: 18.0, clearY: 0.6 },   // 起跳速度 / 重力 / 跨过低栏所需高度（世界单位）
+    slide: { duration: 0.62, heightScale: 0.62 },          // 滑铲持续时间 / 角色压低比例
     introTime: 2.4,          // 开局 3-2-1-GO 倒计时时长（两种模式一致）
     graceDistance: 30,       // 前 30 米只出数字方块，不出障碍
     distanceScore: 1.0,      // 每米得分
@@ -132,7 +137,11 @@
     sprintTileWeights: [[2, 34], [4, 28], [8, 20], [16, 12], [32, 6]],
     powerupWeights: [['shield', 34], ['slow', 20], ['magnet', 26], ['double', 20]],
     coinValue: 1,
-    coinTrailValue: 2
+    coinTrailValue: 2,
+    /* ---- 地铁跑酷式动作障碍（跳 / 滑） ---- */
+    actionObstacleChance: { start: 0.16, end: 0.40, rampDistance: 900 }, // 每个障碍行额外出现动作障碍的概率
+    actionObstacleWeights: [['hurdle', 55], ['bar', 45]],               // 低栏(需跳) / 横杆(需滑)
+    actionObstacleGap: 14                                               // 两个动作障碍之间的最小行距（米）
   };
 
   /* ---------- 计分 ---------- */
