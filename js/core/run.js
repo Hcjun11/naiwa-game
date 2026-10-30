@@ -6,6 +6,7 @@
  *   var run = new NW.core.Run({ mode:'endless'|'sprint', seed:number, bestTile:number });
  *   run.reset()                 // 重置（替换内部 rng / 实体 / 成绩），同 seed 可复现
  *   run.input(dir)              // -1 左 / +1 右；越界忽略；缓冲到下一 update
+ *   run.action('jump'|'slide')  // v0.9.2 地铁跑酷式动作：跳跃 / 滑铲；返回是否触发
  *   run.update(dt)              // 秒；内部 clamp 到 ≤0.05
  *   run.view()                  // 只读快照（SPEC 3.3，渲染层/UI 唯一数据源）
  *   run.drainEvents()           // 取出上次调用后新增的事件（SPEC 3.4）
@@ -20,7 +21,9 @@
  *   - 收集数字方块自动合成、连击倍率、双倍道具、本局新高奖励金币；
  *   - 3 心、受击无敌、掉方块、0.55s 减速；护盾抵挡一次撞击；
  *   - 磁铁吸附 26m 内方块/金币；冲刺 60s 计时（intro 结束后才开始）；
- *   - 受击清空 + 复活（清除前方 35m 障碍、3s 无敌）。
+ *   - 受击清空 + 复活（清除前方 35m 障碍、3s 无敌）；
+ *   - v0.9.2：跳跃 / 滑铲（动作不中断换道）；动作障碍 avoid='jump' 需 y≥clearY、
+ *     avoid='slide' 需滑铲中才能通过，普通障碍行为不变（只能换道躲避）。
  * ========================================================================== */
 (function (global) {
   'use strict';
@@ -121,9 +124,11 @@
     this.overReason = null;
     this._revived = false;
 
-    /* 玩家（内部字段视图不暴露） */
+    /* 玩家（内部字段视图不暴露；y/jumping/rolling 等为 v0.9.2 动作状态） */
     this.player = {
       lane: 1, x: 0, tilt: 0, invuln: 0, hurt: 0, moving: 0,
+      y: 0, vy: 0, jumping: false, jumpT: 0,
+      rolling: false, rollT: 0,
       switching: false, switchT: 0, fromX: 0, toX: 0, dir: 0
     };
 
@@ -153,8 +158,38 @@
     this._pending.push(dir);
   };
 
-  Run.prototype._applyPendingInput = function () {
-    if (!this._pending.length) return;
+  /**
+   * 地铁跑酷式动作（SPEC v0.9.2 §2.1）：
+   * - 'jump'  跳跃：仅地面且未滑铲时生效；空中 / 滑铲中重复触发忽略；
+   * - 'slide' 滑铲：仅地面且未滑铲时生效；空中 / 滑铲中重复触发忽略。
+   * 动作不中断换道（动作期间仍可 input，跳跃中也可换道）。
+   * @param {'jump'|'slide'} kind
+   * @returns {boolean} 是否真正触发
+   */
+  Run.prototype.action = function (kind) {
+    if (this.isOver || this.phase !== 'run') return false;
+    if (kind !== 'jump' && kind !== 'slide') return false;
+    var p = this.player;
+    var airborne = p.jumping || p.y > 1e-9;
+    if (kind === 'jump') {
+      var J = CFG.run.jump;
+      if (!J) return false;
+      if (airborne || p.rolling) return false;      // 空中 / 滑铲中忽略
+      p.jumping = true;
+      p.y = 0;
+      p.vy = J.velocity;
+      p.jumpT = 0;
+      return true;
+    }
+    var S = CFG.run.slide;
+    if (!S) return false;
+    if (airborne || p.rolling) return false;        // 空中 / 滑铲中忽略
+    p.rolling = true;
+    p.rollT = S.duration;
+    return true;
+  };
+
+  Run.prototype._applyPendingInput = function () {    if (!this._pending.length) return;
     var dir = this._pending.shift();
     var p = this.player;
     var lane = p.lane + dir;
@@ -170,6 +205,32 @@
 
   Run.prototype._updatePlayer = function (dt) {
     var p = this.player;
+
+    /* 跳跃物理（SPEC v0.9.2 §2.2）：y += v*dt; v -= g*dt；落地 clamp 0 */
+    if (p.jumping) {
+      var J = CFG.run.jump;
+      var airTime = (2 * J.velocity) / J.gravity;
+      if (!(airTime > 0)) airTime = dt;
+      p.y += p.vy * dt;
+      p.vy -= J.gravity * dt;
+      p.jumpT = Math.min(1, p.jumpT + dt / airTime);
+      if (p.y <= 0 && p.vy < 0) {           // 落地归零
+        p.y = 0;
+        p.vy = 0;
+        p.jumping = false;
+        p.jumpT = 0;
+      }
+    }
+
+    /* 滑铲计时（SPEC v0.9.2 §2.2）：rollT 归零即恢复 */
+    if (p.rolling) {
+      p.rollT -= dt;
+      if (p.rollT <= 0) {
+        p.rollT = 0;
+        p.rolling = false;
+      }
+    }
+
     if (p.switching) {
       p.switchT += dt;
       var k = p.switchT / CFG.run.laneSwitch;
@@ -324,6 +385,7 @@
 
       if (e.kind === 'obstacle') {
         if (player.invuln > 0) { arr[w++] = e; continue; }   // 无敌期间穿过
+        if (this._passesActionObstacle(e)) continue;         // 跳过低栏 / 滑过横杆：成功通过，实体移除
         this._hitObstacle();
         if (this.isOver) {                                   // 本条碰撞导致结算：保留剩余实体后结束
           for (var j = i + 1; j < n; j++) arr[w++] = arr[j];
@@ -340,6 +402,23 @@
   };
 
   /* ------------------------------ 拾取 / 受击 ------------------------------ */
+
+  /**
+   * 动作障碍（SPEC v0.9.2 §2.3）是否被正确规避：
+   * - avoid='jump'  → 当前离地高度 y >= e.clearY（默认 CFG.run.jump.clearY）；
+   * - avoid='slide' → 正在滑铲（rolling）；
+   * - 普通障碍（avoid 为 undefined/null）→ false，行为不变（只能换道躲避）。
+   * 注意：规避成功即通过（实体移除），护盾/无敌优先于本判定，判定失败按普通撞击处理。
+   */
+  Run.prototype._passesActionObstacle = function (e) {
+    if (e.avoid === 'jump') {
+      var J = CFG.run.jump;
+      var clearY = (typeof e.clearY === 'number' && isFinite(e.clearY)) ? e.clearY : (J ? J.clearY : 0);
+      return this.player.y >= clearY - 1e-9;
+    }
+    if (e.avoid === 'slide') return this.player.rolling === true;
+    return false;
+  };
 
   /** 收集数字方块：插入合成槽并结算（正常流程） */
   Run.prototype._collectTile = function (e) {
@@ -462,6 +541,12 @@
     this.hearts = 1;
     this.player.invuln = CFG.run.reviveInvuln;
     this.player.hurt = 0;
+    this.player.y = 0;
+    this.player.vy = 0;
+    this.player.jumping = false;
+    this.player.jumpT = 0;
+    this.player.rolling = false;
+    this.player.rollT = 0;
     this._hurtSlowTimer = 0;
 
     var clearZ = reviveClearZ();
@@ -536,7 +621,8 @@
       rack: rack,
       player: {
         lane: p.lane, x: p.x, tilt: p.tilt,
-        invuln: p.invuln, hurt: p.hurt, moving: p.moving
+        invuln: p.invuln, hurt: p.hurt, moving: p.moving,
+        y: p.y, jumping: p.jumping, rolling: p.rolling, rollT: p.rollT, jumpT: p.jumpT
       },
       powerups: {
         shield: pu.shield, slow: pu.slow, magnet: pu.magnet, double: pu.double
