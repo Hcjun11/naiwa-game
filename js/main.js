@@ -87,6 +87,10 @@
     if (!G.input) return;
     try { G.input(dir); } catch (e) { recordError(e, 'input'); }
   }
+  function actionInput(kind) {
+    if (!G.action) return;
+    try { G.action(kind); } catch (e) { recordError(e, 'action'); }
+  }
   function onPointerDown(ev) {
     unlockAudio();
     if (ev.button !== undefined && ev.button !== 0 && ev.pointerType === 'mouse') return;
@@ -98,9 +102,14 @@
     var rect = canvas.getBoundingClientRect();
     var thr = 24 * (rect.width / CFG.W || 1);
     var dx = ev.clientX - pointer.x;
-    if (Math.abs(dx) >= thr) {
+    var dy = ev.clientY - pointer.y;
+    if (Math.abs(dx) >= thr || Math.abs(dy) >= thr) {
       pointer.fired = true;
-      laneInput(dx > 0 ? 1 : -1);
+      if (Math.abs(dy) > Math.abs(dx)) {
+        actionInput(dy > 0 ? 'slide' : 'jump');
+      } else {
+        laneInput(dx > 0 ? 1 : -1);
+      }
     }
   }
   function onPointerUp(ev) {
@@ -110,7 +119,9 @@
     var dx = ev.clientX - pointer.x;
     var dy = ev.clientY - pointer.y;
     if (!pointer.fired) {
-      if (Math.abs(dx) >= thr && Math.abs(dx) > Math.abs(dy)) {
+      if ((Math.abs(dy) >= thr || Math.abs(dx) >= thr) && Math.abs(dy) > Math.abs(dx)) {
+        actionInput(dy > 0 ? 'slide' : 'jump');
+      } else if (Math.abs(dx) >= thr) {
         laneInput(dx > 0 ? 1 : -1);
       } else if (Math.abs(dx) < 10 && Math.abs(dy) < 10) {
         // 桌面端点击左/右半屏也可换道（游戏内）
@@ -126,6 +137,10 @@
     var playing = G.getStateName && G.getStateName() === 'playing';
     if (k === 'ArrowLeft' || k === 'a' || k === 'A') { laneInput(-1); ev.preventDefault(); }
     else if (k === 'ArrowRight' || k === 'd' || k === 'D') { laneInput(1); ev.preventDefault(); }
+    else if (k === 'ArrowUp' || k === 'w' || k === 'W' || (k === ' ' && playing)) {
+      actionInput('jump'); ev.preventDefault();
+    }
+    else if (k === 'ArrowDown' || k === 's' || k === 'S') { actionInput('slide'); ev.preventDefault(); }
     else if (k === 'Escape' || k === 'p' || k === 'P') {
       var st = G.getStateName ? G.getStateName() : '';
       if (st === 'playing') G.pause();
@@ -239,6 +254,7 @@
       },
       giveCoins: function (n) { return G.debug.giveCoins(n); },
       giveTile: function (v) { return G.debug.giveTile(v); },
+      action: function (kind) { if (G.action) { G.action(kind); return true; } return false; },
       setHearts: function (n) { return G.debug.setHearts(n); },
       forceGameOver: function (reason) { return G.debug.forceGameOver(reason); },
       hit: function () { return G.debug.hit(); },
