@@ -1,22 +1,29 @@
 /* ==========================================================================
- * 《奶娃》角色绘制 —— NW.art.Character
+ * 《奶娃》角色绘制 —— NW.art.Character（v0.9.2）
  * 负责人：character-art（队友 B）
  * --------------------------------------------------------------------------
- * 对外 API（SPEC 4.1）：
+ * 对外 API（SPEC 4.1，v0.9.2 保持不变）：
  *   NW.art.Character.draw(ctx, opts)
  *       opts: { x, y, h, state, t, skin, lean, alpha, blink, squash, face }
  *       x,y  角色脚底中心（逻辑坐标）      h    角色总高度 px（80~320）
- *       state 'idle'|'run'|'laugh'|'hit'|'happy'|'levelup'
+ *       state 'idle'|'run'|'laugh'|'hit'|'happy'|'levelup'|'jump'|'slide'
  *       skin  CFG.skins 中的对象（5 套配色全支持）
- *       face  可选覆盖：'laugh'|'smile'|'wow'|'dizzy'|'star'
+ *       face  可选覆盖：'laugh'|'smile'|'wow'|'dizzy'|'star'|'jump'|'slide'
  *   NW.art.Character.drawShadow(ctx, x, y, rx, alpha)
+ *
+ * v0.9.2 改动：
+ *   1) 形象更贴近参考图 assets/refs/ref_laugh.png / ref_idle.png：
+ *      脸整体上移（大嘴占满头部上半部、几乎无额头）、梨形身体、奶油大肚皮、
+ *      深褐短手短脚、闭眼笑弧+大张嘴、小腮红；
+ *   2) 手臂改为「上臂藏身后 + 前臂/手掌贴肚皮」的分层画法，彻底去掉 U 形把手观感；
+ *   3) 新增 state：jump（收腿/手臂上扬/身体拉长/兴奋张嘴）、
+ *      slide（压低前倾/手臂后摆/眯眼专注）。
  *
  * 设计说明：
  *   - 纯 Canvas 2D 程序化绘制，无图片 / 字体 / 其他模块依赖（NW.util 缺失时降级）。
  *   - 内部「设计空间」：角色高 = 100 单位，y 向下，脚底中心 (0,100)，头顶 (0,0)。
- *     绘制时 scale(h/100)，因此任意 h 都保持比例清晰。
- *   - Path2D 形状缓存 + 按 ctx 缓存的 CanvasGradient（坐标写死在设计空间），
- *     每帧 0 次 path/gradient 重建，250px 角色 60fps 无压力。
+ *     绘制时 scale(h/100)，因此任意 h 都保持比例清晰（游戏内 h≈181px）。
+ *   - Path2D 形状缓存 + 按 ctx 缓存的 CanvasGradient，每帧 0 次 path/gradient 重建。
  *   - ctx.save()/restore() 严格成对，不污染外部状态。
  * ========================================================================== */
 (function (global) {
@@ -28,7 +35,7 @@
   var U = NW.util || null;
 
   /* ======================================================================
-   * 0. 颜色工具（优先后用 NW.util，缺失时本地降级）
+   * 0. 颜色工具（优先用 NW.util，缺失时本地降级）
    * ==================================================================== */
   function parseHex(hex) {
     var h = String(hex || '#000000').replace('#', '');
@@ -52,28 +59,30 @@
   function lighten(hex, t) { return mix(hex, '#FFFFFF', t); }
   function darken(hex, t) { return mix(hex, '#000000', t); }
   function clamp(v, a, b) { return v < a ? a : (v > b ? b : v); }
-  function lerp(a, b, t) { return a + (b - a) * t; }
 
   /* ======================================================================
-   * 1. 设计空间几何常量（角色高 100，y 向下）
+   * 1. 设计空间几何常量（角色高 100，y 向下，脚底 = 100）
    * ==================================================================== */
+  /* 梨形/蛋形身体：头窄、肚子最宽、底部收圆（对齐参考图比例） */
   var BODY_HALF = [
     [0, 0],
-    [6.6, 0.4], [12.4, 3.6], [15.0, 9.0],
-    [15.9, 14.2], [15.3, 19.8], [15.7, 25.0],
-    [17.6, 29.4], [20.8, 33.6], [24.2, 39.8],
-    [26.6, 46.8], [27.6, 54.6], [26.8, 61.6],
-    [24.2, 67.8], [18.6, 71.6], [12.0, 73.0],
-    [6.0, 73.4], [0, 73.6]
+    [6.2, 0.3], [11.6, 2.9], [14.1, 7.4],
+    [15.2, 12.2], [14.9, 17.4], [15.2, 22.4],
+    [17.0, 27.2], [20.0, 31.8], [23.4, 38.4],
+    [26.0, 45.4], [27.4, 53.2], [27.0, 60.8],
+    [24.6, 67.2], [19.2, 71.2], [12.4, 72.9],
+    [6.2, 73.4], [0, 73.6]
   ];
+  /* 奶油大肚皮：占身体正面大部分 */
   var BELLY_HALF = [
-    [0, 30.0], [7.6, 30.4], [14.0, 34.2], [16.6, 40.6],
-    [17.9, 47.8], [17.6, 55.6], [15.6, 62.6], [12.0, 68.0],
-    [7.0, 70.3], [0, 70.7]
+    [0, 30.8], [8.0, 31.2], [14.6, 35.2], [17.0, 42.0],
+    [18.0, 49.2], [17.6, 56.4], [15.4, 63.2], [11.8, 68.2],
+    [6.8, 70.4], [0, 70.8]
   ];
+  /* 深褐色短脚（正面看是圆润的脚掌 + 脚趾） */
   var FOOT_HALF = [
-    [0, -4.8], [4.8, -4.6], [7.8, -2.2], [9.2, 1.8],
-    [8.8, 5.8], [5.0, 7.4], [0, 7.6]
+    [0, -5.0], [5.0, -4.8], [8.0, -2.2], [9.4, 1.8],
+    [9.0, 5.8], [5.2, 7.6], [0, 7.8]
   ];
 
   function buildSymmetric(half) {
@@ -86,11 +95,11 @@
   var BELLY_PTS = buildSymmetric(BELLY_HALF);
   var FOOT_PTS = buildSymmetric(FOOT_HALF);
 
-  /* 面部定位（设计空间） */
+  /* 面部横向定位（纵向由表情预设 EXPR 决定：大嘴脸在头顶、微笑脸靠下） */
   var FACE = {
-    eyeX: 9.2, eyeY: 9.6,
-    mouthX: 0, mouthY: 21.2,
-    cheekX: 11.6, cheekY: 17.0
+    eyeX: 6.9,       /* 双眼中心 x（参考图眼睛靠中间） */
+    cheekX: 10.2,    /* 腮红中心 x */
+    cheekDrop: 2.8   /* 腮红相对嘴中心下移 */
   };
 
   /* ======================================================================
@@ -154,20 +163,20 @@
     ctx.beginPath(); traceMouth(ctx, kind); ctx.clip();
   }
 
-  /* 嘴形（局部坐标，嘴中心 0,0） */
+  /* 嘴形（局部坐标，嘴中心 0,0；laugh 为基准大嘴，grin 用缩放复用） */
   function traceMouth(c, kind) {
     if (kind === 'laugh') {
-      c.moveTo(-11.4, -3.6);
-      c.bezierCurveTo(-7.0, -6.9, 7.0, -6.9, 11.4, -3.6);
-      c.bezierCurveTo(12.8, 1.6, 8.4, 8.4, 0, 8.4);
-      c.bezierCurveTo(-8.4, 8.4, -12.8, 1.6, -11.4, -3.6);
+      c.moveTo(-11.2, -3.4);
+      c.bezierCurveTo(-6.8, -6.8, 6.8, -6.8, 11.2, -3.4);
+      c.bezierCurveTo(12.6, 1.8, 8.2, 8.6, 0, 8.6);
+      c.bezierCurveTo(-8.2, 8.6, -12.6, 1.8, -11.2, -3.4);
       c.closePath();
     } else if (kind === 'o') {
-      c.moveTo(0, -4.2);
-      c.bezierCurveTo(2.9, -4.2, 3.6, -1.6, 3.6, 0.2);
-      c.bezierCurveTo(3.6, 2.8, 1.8, 4.2, 0, 4.2);
-      c.bezierCurveTo(-1.8, 4.2, -3.6, 2.8, -3.6, 0.2);
-      c.bezierCurveTo(-3.6, -1.6, -2.9, -4.2, 0, -4.2);
+      c.moveTo(0, -4.4);
+      c.bezierCurveTo(3.0, -4.4, 3.8, -1.7, 3.8, 0.2);
+      c.bezierCurveTo(3.8, 2.9, 1.9, 4.4, 0, 4.4);
+      c.bezierCurveTo(-1.9, 4.4, -3.8, 2.9, -3.8, 0.2);
+      c.bezierCurveTo(-3.8, -1.7, -3.0, -4.4, 0, -4.4);
       c.closePath();
     } else { /* wavy */
       c.moveTo(-6.8, 0);
@@ -190,7 +199,7 @@
     return [x * c - y * s, x * s + y * c];
   }
 
-  /* Catmull-Rom 均匀采样（用于手臂 / 腿这类弯曲的软管形体） */
+  /* Catmull-Rom 均匀采样（手臂 / 腿这些弯曲软管用） */
   function catmullSamples(pts, total) {
     var n = pts.length, out = [], i, j;
     var segs = n - 1;
@@ -253,7 +262,7 @@
   }
 
   /* ======================================================================
-   * 3. 渐变缓存（按 ctx + skin 缓存；坐标均写死在设计空间，可跨帧复用）
+   * 3. 渐变缓存（按 ctx + skin 缓存；坐标写死在设计空间，可跨帧复用）
    * ==================================================================== */
   function skinKey(skin) {
     if (skin.id) return String(skin.id);
@@ -294,9 +303,6 @@
     G.spec = mkRadial(ctx, 0, 0, 0, 0, 0, 1, [
       [0, 'rgba(255,255,255,0.9)'], [0.5, 'rgba(255,255,255,0.36)'], [1, 'rgba(255,255,255,0)']
     ]);
-    G.blackFade = mkRadial(ctx, 0, 0, 0, 0, 0, 1, [
-      [0, 'rgba(60,32,14,0.55)'], [0.6, 'rgba(60,32,14,0.2)'], [1, 'rgba(60,32,14,0)']
-    ]);
     cache.__shared = G;
     return G;
   }
@@ -323,24 +329,19 @@
       [0.9, bodyShade],
       [1, darken(bodyShade, 0.16)]
     ]);
-    /* 身体底部压暗（接地阴影，保持很轻，避免肚皮下缘发灰） */
+    /* 身体底部压暗（很轻，避免肚皮下缘发灰） */
     G.bodyBottom = mkLinear(ctx, 0, 50, 0, 77, [
       [0, rgba(darken(bodyShade, 0.4), 0)],
       [0.6, rgba(darken(bodyShade, 0.35), 0.12)],
       [1, rgba(darken(bodyShade, 0.42), 0.26)]
     ]);
     /* 肚子（奶油）：中心亮 → 边缘柔化融入身体 */
-    G.belly = mkRadial(ctx, -2.6, 42, 2, -0.5, 50, 28, [
+    G.belly = mkRadial(ctx, -2.6, 42, 2, -0.5, 50, 27, [
       [0, lighten(belly, 0.34)],
       [0.38, belly],
       [0.72, bellyShade],
-      [0.92, rgba(bellyShade, 0.92)],
-      [1, rgba(bellyShade, 0.82)]
-    ]);
-    /* 肚子下缘的鼓起阴影 */
-    G.bellyBottom = mkLinear(ctx, 0, 56, 0, 72, [
-      [0, rgba(darken(bellyShade, 0.28), 0)],
-      [1, rgba(darken(bellyShade, 0.36), 0.55)]
+      [0.92, rgba(bellyShade, 0.93)],
+      [1, rgba(bellyShade, 0.84)]
     ]);
     /* 左侧轮廓补光 */
     G.rim = mkLinear(ctx, -31, 20, -16, 25, [
@@ -354,55 +355,33 @@
       [0.65, rgba(darken(bodyShade, 0.3), 0.12)],
       [1, rgba(darken(bodyShade, 0.3), 0)]
     ]);
-    /* 头顶高光（柔和的一大片，不要硬高光斑） */
-    G.headHi = mkRadial(ctx, -6.4, 4.6, 1, -6.0, 6.0, 21.0, [
+    /* 头顶高光（大范围柔和，不要硬高光斑） */
+    G.headHi = mkRadial(ctx, -6.0, 4.2, 1, -5.8, 5.2, 20.0, [
       [0, 'rgba(255,255,255,0.34)'],
       [0.45, 'rgba(255,255,255,0.15)'],
       [1, 'rgba(255,255,255,0)']
     ]);
-    /* 手臂：左上→右下 的斜面打光（双臂共用，能同时读出手臂体积） */
-    G.arm = mkLinear(ctx, -26, 26, 22, 50, [
+    /* 手臂：左上→右下 的斜面打光（双臂共用） */
+    G.arm = mkLinear(ctx, -26, 22, 22, 50, [
       [0, lighten(body, 0.16)],
       [0.3, body],
       [0.56, mix(body, bodyShade, 0.5)],
       [0.82, bodyShade],
       [1, darken(bodyShade, 0.14)]
     ]);
-    /* 手臂下沿阴影 / 上沿高光 */
-    G.armShade = mkLinear(ctx, 0, 0, 0, 1, [
-      [0, 'rgba(0,0,0,0)'], [1, rgba(darken(bodyShade, 0.45), 0.3)]
-    ]);
-    G.armHi = mkLinear(ctx, 0, 0, 0, 1, [
-      [0, 'rgba(255,255,255,0.4)'], [1, 'rgba(255,255,255,0)']
+    /* 前臂：上亮下暗的圆柱光（贴在奶油肚皮上也有清晰轮廓） */
+    G.forearm = mkLinear(ctx, 0, 36, 0, 52, [
+      [0, lighten(body, 0.26)],
+      [0.42, body],
+      [0.78, mix(body, bodyShade, 0.62)],
+      [1, darken(bodyShade, 0.08)]
     ]);
     /* 腿 */
     G.leg = mkLinear(ctx, 0, 62, 0, 95, [
-      [0, mix(body, bodyShade, 0.35)],
-      [0.38, body],
-      [0.78, mix(body, bodyShade, 0.55)],
-      [1, darken(bodyShade, 0.14)]
-    ]);
-    G.legSideL = mkLinear(ctx, -21, 0, -3.5, 0, [
-      [0, 'rgba(255,255,255,0.16)'],
-      [0.4, 'rgba(255,255,255,0)'],
-      [1, rgba(darken(bodyShade, 0.4), 0.3)]
-    ]);
-    G.legSideR = mkLinear(ctx, 3.5, 0, 21, 0, [
-      [0, 'rgba(255,255,255,0.13)'],
-      [0.42, 'rgba(255,255,255,0)'],
-      [1, rgba(darken(bodyShade, 0.4), 0.32)]
-    ]);
-    /* 柔和褶皱 / 接触阴影（单位空间） */
-    G.crease = mkRadial(ctx, 0, 0, 0, 0, 0, 1, [
-      [0, rgba(darken(bodyShade, 0.5), 0.13)],
-      [0.5, rgba(darken(bodyShade, 0.5), 0.06)],
-      [1, rgba(darken(bodyShade, 0.5), 0)]
-    ]);
-    /* 手/手臂贴在奶油肚皮上的极淡接触阴影 */
-    G.contactSoft = mkRadial(ctx, 0, 0, 0, 0, 0, 1, [
-      [0, rgba(darken(bodyShade, 0.35), 0.13)],
-      [0.55, rgba(darken(bodyShade, 0.35), 0.06)],
-      [1, rgba(darken(bodyShade, 0.35), 0)]
+      [0, mix(body, bodyShade, 0.1)],
+      [0.42, body],
+      [0.8, mix(body, bodyShade, 0.5)],
+      [1, darken(bodyShade, 0.12)]
     ]);
     /* 肚子高光 */
     G.bellyHi = mkRadial(ctx, -4.5, 41, 0.5, -4.0, 43, 15, [
@@ -437,9 +416,9 @@
       [0.82, darken(eye, 0.18)],
       [1, darken(eye, 0.42)]
     ]);
-    /* 腮红（柔和扩散） */
+    /* 腮红（略明显但柔和扩散） */
     G.cheek = mkRadial(ctx, 0, 0, 0, 0, 0, 1, [
-      [0, rgba(skin.cheek, 0.4)], [0.55, rgba(skin.cheek, 0.2)], [1, rgba(skin.cheek, 0)]
+      [0, rgba(skin.cheek, 0.55)], [0.55, rgba(skin.cheek, 0.3)], [1, rgba(skin.cheek, 0)]
     ]);
     /* 嘴内阴影（局部） */
     G.throat = mkRadial(ctx, 0, -1, 0.5, 0, 2, 16, [
@@ -453,9 +432,16 @@
       [0.55, rgba(skin.accent, 0.16)],
       [1, rgba(skin.accent, 0)]
     ]);
-    /* 身体接触阴影（脚下 / 手贴肚子） */
-    G.contact = mkRadial(ctx, 0, 0, 0, 0, 0, 1, [
-      [0, rgba(darken(bodyShade, 0.45), 0.5)], [1, rgba(darken(bodyShade, 0.45), 0)]
+    /* 柔和褶皱 / 接触阴影（单位空间） */
+    G.crease = mkRadial(ctx, 0, 0, 0, 0, 0, 1, [
+      [0, rgba(darken(bodyShade, 0.5), 0.13)],
+      [0.5, rgba(darken(bodyShade, 0.5), 0.06)],
+      [1, rgba(darken(bodyShade, 0.5), 0)]
+    ]);
+    G.contactSoft = mkRadial(ctx, 0, 0, 0, 0, 0, 1, [
+      [0, rgba(darken(bodyShade, 0.35), 0.13)],
+      [0.55, rgba(darken(bodyShade, 0.35), 0.06)],
+      [1, rgba(darken(bodyShade, 0.35), 0)]
     ]);
 
     cache[key] = G;
@@ -463,15 +449,31 @@
   }
 
   /* ======================================================================
-   * 4. 动画参数
+   * 4. 表情预设（v0.9.2：脸整体上移，大嘴占满头部上半部）
    * ==================================================================== */
+  var EXPR = {
+    /* 待机 / 奔跑（v0.9.2 收尾）：参考图式「眯眼大笑」——闭眼弯月笑眼 + 大张嘴露牙露舌
+       嘴宽 ≈ 头宽 46%（≈ 参考图 ref_laugh.png），小尺寸 h≈181px 下也能一眼读出 */
+    smile: { eye: 'happyArc', eyeY: 8.0, eyeSpan: 3.6, eyeBow: 3.2, eyeLW: 2.0, mouth: 'grin', mouthY: 14.6, mouthScale: 0.68 },
+    run: { eye: 'happyArc', eyeY: 8.0, eyeSpan: 3.5, eyeBow: 3.0, eyeLW: 2.0, mouth: 'grin', mouthY: 14.8, mouthScale: 0.66 },
+    laugh: { eye: 'happyArc', eyeY: 8.2, mouth: 'laugh', mouthY: 12.6, mouthScale: 1.0 },
+    happy: { eye: 'happyArc', eyeY: 8.4, mouth: 'grin', mouthY: 15.0, mouthScale: 0.82 },
+    wow: { eye: 'wide', eyeY: 6.8, eyeR: [3.5, 3.9], mouth: 'o', mouthY: 16.0, mouthScale: 1.0 },
+    dizzy: { eye: 'x', eyeY: 7.6, mouth: 'wavy', mouthY: 15.8, mouthScale: 0.95 },
+    star: { eye: 'star', eyeY: 7.8, mouth: 'grin', mouthY: 15.6, mouthScale: 0.78 },
+    jump: { eye: 'wide', eyeY: 6.4, eyeR: [3.4, 3.7], mouth: 'laugh', mouthY: 15.2, mouthScale: 0.62 },
+    slide: { eye: 'focus', eyeY: 9.0, mouth: 'smile', mouthY: 16.6, mouthScale: 0.9 }
+  };
+
   var FACE_BY_STATE = {
     idle: 'smile',
     run: 'run',
     laugh: 'laugh',
     hit: 'dizzy',
     happy: 'happy',
-    levelup: 'star'
+    levelup: 'star',
+    jump: 'jump',
+    slide: 'slide'
   };
 
   function autoBlink(t, seed) {
@@ -482,60 +484,84 @@
     return 0;
   }
 
+  /* ======================================================================
+   * 5. 动画参数
+   * ==================================================================== */
   function stateAnim(state, t) {
     var s = Math.sin, a = Math.abs;
     var p = {
-      bob: 0, jelly: 0, arm: 0, armSwing: 0, armPhase: 0,
-      legLift: 0, legPhase: 0, legSpread: 0, legSwingX: 0,
-      bellyWobble: 0, faceTilt: 0, faceY: 0, faceScale: 1,
-      glow: 0, shake: 0, sparkle: 0
+      bob: 0, jelly: 0,
+      arm: 0, armSwing: 0, armPhase: 0, armPose: 'rest',
+      legPose: 'rest', legLift: 0, legPhase: 14, legSwingX: 0, legSpread: 0,
+      bellyWobble: 0, faceTilt: 0, faceY: 0,
+      stretchY: 1, stretchX: 1,
+      glow: 0, shake: 0
     };
     switch (state) {
       case 'run':
         p.bob = a(s(t * 10.6)) * 2.7;
         p.jelly = s(t * 21.2) * 0.014;
         p.armSwing = 0.4; p.armPhase = 10.6;
-        p.legPhase = 10.6; p.legLift = 5.0; p.legSwingX = 1.2;
+        p.legPhase = 10.6; p.legLift = 5.2; p.legSwingX = 1.2;
         p.bellyWobble = a(s(t * 10.6 + 0.8)) * 0.05;
         p.faceTilt = 0.02;
         break;
       case 'laugh':
         p.bob = a(s(t * 7.0)) * 3.4;
         p.jelly = s(t * 14.0) * 0.02;
-        p.arm = 0.04; p.armSwing = 0.06; p.armPhase = 12.0;
+        p.arm = 0.02; p.armSwing = 0.06; p.armPhase = 12.0;
         p.legLift = 1.4; p.legPhase = 7.0;
         p.bellyWobble = a(s(t * 14.0 + 0.4)) * 0.07;
-        p.faceTilt = -0.055; p.faceY = -1.1;
+        p.faceTilt = -0.05; p.faceY = -1.0;
         break;
       case 'hit':
         p.bob = -1.6;
-        p.arm = 0.85; p.armSwing = 0.3; p.armPhase = 18;
+        p.arm = 0.7; p.armSwing = 0.35; p.armPhase = 18;
         p.shake = 1;
         p.legSpread = 2.2;
         p.faceTilt = 0.1 * s(t * 9);
         p.jelly = s(t * 30) * 0.02;
+        p.stretchX = 1.03;
         break;
       case 'happy':
         p.bob = a(s(t * 6.2)) * 4.4;
-        p.arm = 0.95; p.armSwing = 0.28; p.armPhase = 6.2;
+        p.arm = 0.3; p.armSwing = 0.45; p.armPhase = 6.2;
         p.legLift = 3.0; p.legPhase = 6.2;
         p.bellyWobble = a(s(t * 6.2 + 0.6)) * 0.05;
         p.jelly = s(t * 12.4) * 0.02;
         break;
       case 'levelup':
         p.bob = 1.6 + a(s(t * 4.6)) * 3.2;
-        p.arm = 2.35; p.armSwing = 0.14; p.armPhase = 9.0;
+        p.armPose = 'up'; p.arm = 0.1; p.armSwing = 0.14; p.armPhase = 9.0;
         p.legLift = 2.0; p.legPhase = 4.6;
         p.bellyWobble = a(s(t * 9 + 0.3)) * 0.05;
         p.glow = 0.85 + 0.15 * s(t * 5);
-        p.sparkle = t;
         p.faceTilt = -0.03;
+        break;
+      case 'jump':
+        /* 收腿 / 手臂上扬 / 身体拉长 / 兴奋张嘴 */
+        p.bob = 0.8 + s(t * 9) * 0.5;
+        p.armPose = 'up'; p.arm = 0.12; p.armSwing = 0.1; p.armPhase = 9;
+        p.legPose = 'tuck';
+        p.stretchY = 1.06; p.stretchX = 0.97;
+        p.bellyWobble = a(s(t * 11)) * 0.035;
+        p.faceTilt = -0.05; p.faceY = -0.8;
+        p.jelly = s(t * 12) * 0.012;
+        break;
+      case 'slide':
+        /* 压低前倾 / 手臂后摆 / 眯眼专注 */
+        p.bob = -0.6;
+        p.armPose = 'back'; p.arm = 0.1; p.armSwing = 0.08; p.armPhase = 11;
+        p.legPose = 'splay';
+        p.stretchY = 0.9; p.stretchX = 1.06;
+        p.bellyWobble = a(s(t * 13)) * 0.03;
+        p.faceTilt = 0.07; p.faceY = 1.0;
+        p.jelly = s(t * 13) * 0.01;
         break;
       default: /* idle */
         p.bob = 0.35 + s(t * 1.7) * 0.35;
         p.jelly = s(t * 1.7) * 0.008;
         p.armSwing = 0.05; p.armPhase = 1.7;
-        p.legLift = 0;
         p.bellyWobble = a(s(t * 1.7 + 0.5)) * 0.022;
         break;
     }
@@ -543,7 +569,7 @@
   }
 
   /* ======================================================================
-   * 5. 部件绘制
+   * 6. 部件绘制
    * ==================================================================== */
 
   /* ---- 腿 + 脚（画在身体之前，被身体挡住根部） ---- */
@@ -554,22 +580,37 @@
       var ph = Math.sin(t * p.legPhase + (i === 0 ? 0 : Math.PI));
       var lift = Math.max(0, ph) * p.legLift;
       var dx = ph * p.legSwingX;
-      var hipX = side * (10.8 + p.legSpread * 0.5);
-      var hipY = 63.5;
-      var ankX = side * 12.2 + dx;
-      var ankY = 92.5 - lift;
-      var kneeX = (hipX + ankX) * 0.5 + side * 1.4;
-      var kneeY = (hipY + ankY) * 0.5;
-      var legPts = [[hipX, hipY], [kneeX, kneeY], [ankX, ankY]];
-      var legW = [17.2, 14.6, 11.2];
+      var hipX, hipY, kneeX, kneeY, ankX, ankY, footRot, widths;
 
-      /* 腿主体（胶囊链 + 纵向渐变） */
-      strokeTaper(ctx, legPts, legW, G.leg);
+      if (p.legPose === 'tuck') {
+        /* 跳跃收腿：膝盖外翻、脚掌收到身体下方并翘起 */
+        hipX = side * (10.4 + p.legSpread * 0.5); hipY = 63.2;
+        kneeX = side * 14.8; kneeY = 72.4;
+        ankX = side * 15.4; ankY = 81.0;
+        footRot = side * 0.42;
+        widths = [17.0, 15.0, 11.0];
+      } else if (p.legPose === 'splay') {
+        /* 滑铲：双腿向两侧张开、脚掌外撇 */
+        hipX = side * (11.0 + p.legSpread * 0.5); hipY = 63.0;
+        kneeX = side * 15.8; kneeY = 76.4;
+        ankX = side * 20.6; ankY = 90.2;
+        footRot = side * 0.34;
+        widths = [17.2, 15.0, 10.8];
+      } else {
+        hipX = side * (10.8 + p.legSpread * 0.5); hipY = 63.6;
+        kneeX = side * 13.2 + dx * 0.5; kneeY = 78.2;
+        ankX = side * 12.2 + dx; ankY = 92.5 - lift;
+        footRot = side * 0.02 + ph * 0.08;
+        widths = [17.2, 14.6, 11.2];
+      }
+
+      var legPts = [[hipX, hipY], [kneeX, kneeY], [ankX, ankY]];
+      strokeTaper(ctx, legPts, widths, G.leg);
 
       /* 脚 */
       ctx.save();
       ctx.translate(ankX, ankY);
-      ctx.rotate(side * 0.02 + ph * 0.08);
+      ctx.rotate(footRot);
       fillBody(ctx, 'foot', FOOT_PTS, G.foot);
       /* 三个脚趾（脚掌前缘鼓起） */
       var toes = [[-4.8, 6.5, 2.9, 2.5], [0, 7.0, 3.1, 2.7], [4.8, 6.5, 2.9, 2.5]];
@@ -585,8 +626,8 @@
       ctx.lineCap = 'round';
       for (var j = -1; j <= 1; j += 2) {
         ctx.beginPath();
-        ctx.moveTo(j * 2.4, 8.6);
-        ctx.quadraticCurveTo(j * 2.6, 6.4, j * 2.3, 4.6);
+        ctx.moveTo(j * 2.4, 8.8);
+        ctx.quadraticCurveTo(j * 2.6, 6.5, j * 2.3, 4.7);
         ctx.stroke();
       }
       /* 脚背高光 */
@@ -598,12 +639,153 @@
       ctx.restore();
       /* 脚底接触暗部 */
       ctx.save();
-      ctx.translate(0, 7.4);
+      ctx.translate(0, 7.6);
       ctx.scale(8.0, 1.8);
-      ctx.fillStyle = 'rgba(38,20,8,0.28)';
+      ctx.fillStyle = 'rgba(38,20,8,0.26)';
       ctx.beginPath(); ctx.arc(0, 0, 1, 0, Math.PI * 2); ctx.fill();
       ctx.restore();
       ctx.restore();
+    }
+  }
+
+  /* ---- 手臂点位：上臂（藏身后）、肘、手（贴肚皮） ---- */
+  function armPoints(side, a, pose) {
+    var S, P, H;
+    if (pose === 'up') {
+      S = [12.4, 34.0]; P = [23.0, 30.4]; H = [25.4, 19.2];
+    } else if (pose === 'back') {
+      S = [12.4, 35.4]; P = [23.2, 42.4]; H = [26.6, 49.0];
+    } else {
+      S = [12.4, 34.2]; P = [24.6, 39.6]; H = [11.8, 47.6];
+    }
+    S = [side * S[0], S[1]];
+    P = [side * P[0], P[1]];
+    H = [side * H[0], H[1]];
+    /* 绕肩摆动：>0 = 向外 / 向上 */
+    var rot = -side * a;
+    var pv = rotVec(P[0] - S[0], P[1] - S[1], rot);
+    var hv = rotVec(H[0] - S[0], H[1] - S[1], rot);
+    return { S: S, P: [S[0] + pv[0], S[1] + pv[1]], H: [S[0] + hv[0], S[1] + hv[1]] };
+  }
+
+  function handAngle(P, H, side) {
+    var dx = H[0] - P[0], dy = H[1] - P[1];
+    var ang = side > 0 ? Math.atan2(dy, dx) : Math.atan2(-dy, dx);
+    return ang - 2.5;   /* 手局部「手指」方向约 2.5 rad（朝内下方） */
+  }
+
+  function drawHand(ctx, skin, G, side, hx, hy, rot) {
+    var SH = sharedGrads(ctx);
+    ctx.save();
+    ctx.translate(hx, hy);
+    if (side < 0) ctx.scale(-1, 1);
+    ctx.rotate(rot);
+
+    ctx.fillStyle = G.hand;
+    ctx.beginPath();
+    ctx.ellipse(0.3, 0.4, 5.0, 5.1, 0.3, 0, Math.PI * 2);
+    ctx.fill();
+    /* 三根手指：沿内侧张开 */
+    var fingers = [[-4.4, 0.6, 2.0, 1.6, 0.45],
+    [-4.9, 2.6, 2.0, 1.55, 0.2],
+    [-3.9, 4.5, 1.85, 1.5, -0.15]];
+    for (var f = 0; f < fingers.length; f++) {
+      ctx.beginPath();
+      ctx.ellipse(fingers[f][0], fingers[f][1], fingers[f][2], fingers[f][3], fingers[f][4], 0, Math.PI * 2);
+      ctx.fill();
+    }
+    /* 拇指 */
+    ctx.beginPath();
+    ctx.ellipse(-0.9, -4.1, 1.9, 1.5, -0.6, 0, Math.PI * 2);
+    ctx.fill();
+    /* 指缝 */
+    ctx.strokeStyle = rgba(skin.limbShade, 0.5);
+    ctx.lineWidth = 0.65;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(-3.4, 1.7); ctx.quadraticCurveTo(-2.4, 2.4, -1.8, 2.8);
+    ctx.moveTo(-3.2, 3.6); ctx.quadraticCurveTo(-2.2, 4.2, -1.5, 4.5);
+    ctx.stroke();
+    /* 手背高光 */
+    ctx.save();
+    ctx.translate(0.9, -2.2);
+    ctx.scale(3.0, 1.7);
+    ctx.fillStyle = G.handHi;
+    ctx.beginPath(); ctx.arc(0, 0, 1, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+    ctx.restore();
+  }
+
+  /* ---- 手臂后层：上臂（藏身后）；slide 时整条手臂都在身后 ---- */
+  function drawArmsBack(ctx, skin, G, t, p) {
+    var i, side;
+    for (i = 0; i < 2; i++) {
+      side = i === 0 ? -1 : 1;
+      var phase = Math.sin(t * p.armPhase + (i === 0 ? 0 : Math.PI));
+      var a = p.arm + p.armSwing * phase;
+      var A = armPoints(side, a, p.armPose);
+
+      /* 上臂：肩 → 肘（大部分被身体挡住，只在身体轮廓外露出小肩头） */
+      var upPts = [A.S, [(A.S[0] + A.P[0]) / 2 + side * 0.6, (A.S[1] + A.P[1]) / 2 - 0.6], A.P];
+      strokeTaper(ctx, upPts, [13.6, 12.2, 10.4], G.arm);
+
+      if (p.armPose === 'back') {
+        /* 滑铲：前臂与手也画在身后，形成「手臂后摆」 */
+        var faPts = [A.P, [(A.P[0] + A.H[0]) / 2, (A.P[1] + A.H[1]) / 2 + 0.4], A.H];
+        strokeTaper(ctx, faPts, [10.4, 9.4, 8.2], G.forearm);
+        drawHand(ctx, skin, G, side, A.H[0], A.H[1], handAngle(A.P, A.H, side));
+      }
+    }
+  }
+
+  /* ---- 手臂前层：前臂 + 手（自然搭在肚皮两侧） ---- */
+  function drawArmsFront(ctx, skin, G, t, p) {
+    if (p.armPose === 'back') return;
+    var i, side;
+    for (i = 0; i < 2; i++) {
+      side = i === 0 ? -1 : 1;
+      var phase = Math.sin(t * p.armPhase + (i === 0 ? 0 : Math.PI));
+      var a = p.arm + p.armSwing * phase;
+      var A = armPoints(side, a, p.armPose);
+      var P = A.P, H = A.H;
+
+      var faPts = [P, [(P[0] + H[0]) / 2, (P[1] + H[1]) / 2 + 0.5], H];
+
+      /* 前臂在肚皮上的柔和投影：沿前臂法线偏向下侧，只从下缘露出一点 */
+      var fdx = H[0] - P[0], fdy = H[1] - P[1];
+      var flen = Math.sqrt(fdx * fdx + fdy * fdy) || 1;
+      var fnx = -fdy / flen, fny = fdx / flen;
+      if (fny < 0) { fnx = -fnx; fny = -fny; }
+      ctx.save();
+      clipBody(ctx, 'body', BODY_PTS);
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.strokeStyle = 'rgba(88,50,20,0.13)';
+      ctx.lineWidth = 7.2;
+      smoothPath(ctx, offsetPts(faPts, fnx * 2.0, fny * 2.0));
+      ctx.stroke();
+      /* 手贴在肚皮上的接触阴影 */
+      ctx.save();
+      ctx.translate(H[0] + side * 0.6, H[1] + 2.6);
+      ctx.scale(6.4, 4.2);
+      ctx.fillStyle = G.contactSoft;
+      ctx.beginPath(); ctx.arc(0, 0, 1, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
+      ctx.restore();
+
+      /* 前臂（圆润软管，上亮下暗的圆柱光 → 在奶油肚皮上有辨识度） */
+      strokeTaper(ctx, faPts, [10.8, 9.6, 8.2], G.forearm);
+
+      /* 上沿柔光 */
+      ctx.save();
+      ctx.strokeStyle = rgba(lighten(skin.bodyHi, 0.7), 0.3);
+      ctx.lineCap = 'round';
+      ctx.lineWidth = 2.6;
+      smoothPath(ctx, offsetPts(faPts, -side * 1.8, -2.2));
+      ctx.stroke();
+      ctx.restore();
+
+      drawHand(ctx, skin, G, side, H[0], H[1], handAngle(P, H, side));
     }
   }
 
@@ -619,13 +801,13 @@
 
     /* 底部接地压暗 */
     ctx.fillStyle = G.bodyBottom;
-    ctx.fillRect(-32, 36, 64, 42);
+    ctx.fillRect(-33, 36, 66, 42);
 
     /* 左侧轮廓补光 + 右侧暗边（铺满裁剪区，避免硬边） */
     ctx.fillStyle = G.rim;
-    ctx.fillRect(-32, 0, 22, 78);
+    ctx.fillRect(-33, 0, 23, 78);
     ctx.fillStyle = G.edge;
-    ctx.fillRect(12, 0, 22, 78);
+    ctx.fillRect(11, 0, 23, 78);
 
     /* 肚皮（奶油大肚） */
     var wob = 1 + p.bellyWobble;
@@ -662,7 +844,7 @@
 
     /* 头顶高光 */
     ctx.save();
-    ctx.translate(-6.2, 5.4);
+    ctx.translate(-5.8, 4.8);
     ctx.scale(19.0, 18.0);
     ctx.fillStyle = G.headHi;
     ctx.beginPath(); ctx.arc(0, 0, 1, 0, Math.PI * 2); ctx.fill();
@@ -670,9 +852,9 @@
 
     ctx.restore(); /* end clip */
 
-    /* 极淡的轮廓线，让边缘更干净 */
+    /* 极淡轮廓线，让边缘更干净 */
     ctx.save();
-    ctx.strokeStyle = rgba(darken(skin.bodyShade, 0.35), 0.16);
+    ctx.strokeStyle = rgba(darken(skin.bodyShade, 0.35), 0.15);
     ctx.lineWidth = 0.7;
     var P = getPaths();
     if (P && P.body) ctx.stroke(P.body);
@@ -682,98 +864,10 @@
     /* 腿根部的柔和阴影，遮住腿与身体的接缝 */
     for (var i = -1; i <= 1; i += 2) {
       ctx.save();
-      ctx.translate(i * 10.6, 71.8);
+      ctx.translate(i * 10.6, 72.2);
       ctx.scale(8.8, 4.4);
       ctx.fillStyle = G.crease;
       ctx.beginPath(); ctx.arc(0, 0, 1, 0, Math.PI * 2); ctx.fill();
-      ctx.restore();
-    }
-  }
-
-  /* ---- 手臂 + 手 ---- */
-  function drawArms(ctx, skin, G, t, p) {
-    var i, side;
-
-    for (i = 0; i < 2; i++) {
-      side = i === 0 ? -1 : 1;
-      var phase = Math.sin(t * p.armPhase + (i === 0 ? 0 : Math.PI));
-      var a = p.arm + p.armSwing * phase;   /* >0 = 手臂向外 / 向上张开 */
-      var rot = -side * a;
-
-      var S = [side * 16.4, 35.0];
-      var Erel = rotVec(side * 2.2, 5.4, rot);
-      var Hrel = rotVec(side * -2.6, 10.2, rot);
-      var E = [S[0] + Erel[0], S[1] + Erel[1]];
-      var H = [S[0] + Hrel[0], S[1] + Hrel[1]];
-
-      /* 三点香蕉形曲线：肩 → 肘外弧 → 手，短手自然搭在肚皮两侧 */
-      var armPts = [S, E, H];
-      var armW = [13.6, 11.4, 8.6];
-
-      /* 只保留手贴肚皮的极淡接触阴影（不做整条手臂描边，避免 U 形把手观感） */
-      ctx.save();
-      clipBody(ctx, 'body', BODY_PTS);
-      ctx.save();
-      ctx.translate(H[0] + side * 0.6, H[1] + 2.6);
-      ctx.scale(6.2, 4.0);
-      ctx.fillStyle = G.contactSoft;
-      ctx.beginPath(); ctx.arc(0, 0, 1, 0, Math.PI * 2); ctx.fill();
-      ctx.restore();
-      ctx.restore();
-
-      /* 手臂主体（圆润软管，无描边 → 不会出现细线） */
-      strokeTaper(ctx, armPts, armW, G.arm);
-
-      /* 上沿柔光 */
-      ctx.save();
-      ctx.strokeStyle = rgba(lighten(skin.bodyHi, 0.7), 0.3);
-      ctx.lineCap = 'round';
-      ctx.lineWidth = 2.8;
-      smoothPath(ctx, offsetPts(armPts, -side * 2.4, -2.4));
-      ctx.stroke();
-      ctx.restore();
-
-      /* 手（深棕小胖手，掌心贴住肚皮、手指朝内侧张开） */
-      ctx.save();
-      ctx.translate(H[0], H[1]);
-      ctx.rotate(side * (0.55 + a * 0.3));
-      if (side < 0) ctx.scale(-1, 1);
-
-      ctx.fillStyle = G.hand;
-      ctx.beginPath();
-      ctx.ellipse(0.3, 0.4, 5.0, 5.1, 0.3, 0, Math.PI * 2);
-      ctx.fill();
-
-      /* 三根手指：沿内侧向下张开 */
-      var fingers = [[-4.4, 0.6, 2.0, 1.6, 0.45],
-      [-4.9, 2.6, 2.0, 1.55, 0.2],
-      [-3.9, 4.5, 1.85, 1.5, -0.15]];
-      for (var f = 0; f < fingers.length; f++) {
-        ctx.beginPath();
-        ctx.ellipse(fingers[f][0], fingers[f][1], fingers[f][2], fingers[f][3], fingers[f][4], 0, Math.PI * 2);
-        ctx.fill();
-      }
-      /* 拇指（朝上内侧） */
-      ctx.beginPath();
-      ctx.ellipse(-0.9, -4.1, 1.9, 1.5, -0.6, 0, Math.PI * 2);
-      ctx.fill();
-
-      /* 指缝 */
-      ctx.strokeStyle = rgba(skin.limbShade, 0.5);
-      ctx.lineWidth = 0.65;
-      ctx.lineCap = 'round';
-      ctx.beginPath();
-      ctx.moveTo(-3.4, 1.7); ctx.quadraticCurveTo(-2.4, 2.4, -1.8, 2.8);
-      ctx.moveTo(-3.2, 3.6); ctx.quadraticCurveTo(-2.2, 4.2, -1.5, 4.5);
-      ctx.stroke();
-
-      /* 手背高光 */
-      ctx.save();
-      ctx.translate(0.9, -2.2);
-      ctx.scale(3.0, 1.7);
-      ctx.fillStyle = G.handHi;
-      ctx.beginPath(); ctx.arc(0, 0, 1, 0, Math.PI * 2); ctx.fill();
-      ctx.restore();
       ctx.restore();
     }
   }
@@ -793,38 +887,38 @@
     ctx.fill();
   }
 
-  function drawEyes(ctx, skin, G, style, blink) {
-    var i, side, ex = FACE.eyeX, ey = FACE.eyeY;
+  function drawEyes(ctx, skin, G, E, blink) {
+    var i, side, ex = FACE.eyeX, ey = E.eyeY;
     var openScale = 1 - blink * 0.88;
+    var eyeR = E.eyeR || [3.0, 3.3];
 
     for (i = 0; i < 2; i++) {
       side = i === 0 ? -1 : 1;
       var x = side * ex;
 
-      if (style === 'open' || style === 'wide') {
-        var big = style === 'wide' ? 1.24 : 1;
+      if (E.eye === 'open' || E.eye === 'wide') {
+        var rx = eyeR[0], ry = eyeR[1];
         ctx.save();
         ctx.translate(x, ey);
         ctx.scale(1, Math.max(0.12, openScale));
-        var g = G.eye;
-        ctx.fillStyle = g;
+        ctx.fillStyle = G.eye;
         ctx.beginPath();
-        ctx.ellipse(0, 0, 3.1 * big, 3.45 * big, 0, 0, Math.PI * 2);
+        ctx.ellipse(0, 0, rx, ry, 0, 0, Math.PI * 2);
         ctx.fill();
         /* 上眼睑暗边 */
         ctx.strokeStyle = rgba(darken(skin.eye, 0.2), 0.45);
         ctx.lineWidth = 0.55;
         ctx.beginPath();
-        ctx.ellipse(0, 0, 3.1 * big, 3.45 * big, 0, Math.PI * 1.05, Math.PI * 1.95);
+        ctx.ellipse(0, 0, rx, ry, 0, Math.PI * 1.05, Math.PI * 1.95);
         ctx.stroke();
         /* 高光 */
         ctx.fillStyle = skin.teeth;
         ctx.beginPath();
-        ctx.arc(-1.1 * big, -1.3 * big, 1.2 * big, 0, Math.PI * 2);
+        ctx.arc(-rx * 0.36, -ry * 0.38, rx * 0.39, 0, Math.PI * 2);
         ctx.fill();
         ctx.fillStyle = rgba(skin.teeth, 0.55);
         ctx.beginPath();
-        ctx.arc(1.0 * big, 1.35 * big, 0.58 * big, 0, Math.PI * 2);
+        ctx.arc(rx * 0.32, ry * 0.42, rx * 0.2, 0, Math.PI * 2);
         ctx.fill();
         ctx.restore();
         /* 眨眼完成时补一条闭眼线 */
@@ -833,20 +927,44 @@
           ctx.lineWidth = 1.0;
           ctx.lineCap = 'round';
           ctx.beginPath();
-          ctx.moveTo(x - 3.0, ey + 0.6);
-          ctx.quadraticCurveTo(x, ey + 2.0, x + 3.0, ey + 0.6);
+          ctx.moveTo(x - rx, ey + 0.6);
+          ctx.quadraticCurveTo(x, ey + 2.0, x + rx, ey + 0.6);
           ctx.stroke();
         }
-      } else if (style === 'happyArc') {
-        /* 弯月笑眼：短弧、略低，配合大笑嘴 */
+      } else if (E.eye === 'happyArc') {
+        /* 弯月笑眼：短弧；blink 时弧变平（像挤了下眼睛），保留眨眼变化 */
+        var span = E.eyeSpan == null ? 2.9 : E.eyeSpan;
+        var bow = (E.eyeBow == null ? 2.2 : E.eyeBow) * (1 - blink * 0.55);
+        var lw = (E.eyeLW || 1.6) + blink * 0.5;
         ctx.strokeStyle = skin.eye;
-        ctx.lineWidth = 1.6;
+        ctx.lineWidth = lw;
         ctx.lineCap = 'round';
         ctx.beginPath();
-        ctx.moveTo(x - 2.9, ey + 2.4);
-        ctx.quadraticCurveTo(x, ey + 0.2, x + 2.9, ey + 2.4);
+        ctx.moveTo(x - span, ey + 2.4);
+        ctx.quadraticCurveTo(x, ey + 2.4 - bow, x + span, ey + 2.4);
         ctx.stroke();
-      } else if (style === 'x') {
+      } else if (E.eye === 'focus') {
+        /* 专注眯眼：细长眼 + 高光 */
+        ctx.save();
+        ctx.translate(x, ey);
+        ctx.fillStyle = G.eye;
+        ctx.beginPath();
+        ctx.ellipse(0, 0, 3.2, 1.55, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = skin.teeth;
+        ctx.beginPath();
+        ctx.arc(-0.8, -0.2, 0.75, 0, Math.PI * 2);
+        ctx.fill();
+        /* 上眼皮压线 */
+        ctx.strokeStyle = rgba(darken(skin.eye, 0.1), 0.7);
+        ctx.lineWidth = 0.9;
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        ctx.moveTo(-3.3, -0.7);
+        ctx.quadraticCurveTo(0, -1.9, 3.3, -0.7);
+        ctx.stroke();
+        ctx.restore();
+      } else if (E.eye === 'x') {
         ctx.strokeStyle = skin.eye;
         ctx.lineWidth = 1.9;
         ctx.lineCap = 'round';
@@ -854,10 +972,9 @@
         ctx.moveTo(x - 2.7, ey - 2.7); ctx.lineTo(x + 2.7, ey + 2.7);
         ctx.moveTo(x + 2.7, ey - 2.7); ctx.lineTo(x - 2.7, ey + 2.7);
         ctx.stroke();
-      } else if (style === 'star') {
+      } else if (E.eye === 'star') {
         drawEyeStar(ctx, x, ey, 4.4, skin.eye);
         drawEyeStar(ctx, x, ey, 2.5, mix(skin.accent, '#FFFFFF', 0.35));
-        /* 星芒 */
         ctx.strokeStyle = rgba(skin.teeth, 0.9);
         ctx.lineWidth = 0.7;
         ctx.lineCap = 'round';
@@ -871,32 +988,37 @@
   }
 
   /* ---- 嘴 ---- */
-  function drawMouth(ctx, skin, G, kind, open) {
-    var cx = FACE.mouthX, cy = FACE.mouthY;
-    var s = open === undefined ? 1 : open;
-    var i;
+  function drawMouth(ctx, skin, G, E) {
+    var ms = E.mouthScale || 1;
+    var kind = E.mouth;
 
     ctx.save();
-    ctx.translate(cx, cy);
+    ctx.translate(0, E.mouthY);
 
     if (kind === 'smile') {
+      /* 闭口微笑：两端微翘 */
+      ctx.save();
+      ctx.scale(ms, ms);
       ctx.strokeStyle = skin.mouth;
-      ctx.lineWidth = 1.6;
+      ctx.lineWidth = 1.7;
       ctx.lineCap = 'round';
       ctx.beginPath();
-      ctx.moveTo(-5.6, -1.2);
-      ctx.quadraticCurveTo(-2.6, 2.8, 0, 3.0);
-      ctx.quadraticCurveTo(2.6, 2.8, 5.6, -1.2);
+      ctx.moveTo(-5.8, -1.2);
+      ctx.quadraticCurveTo(-2.6, 3.0, 0, 3.2);
+      ctx.quadraticCurveTo(2.6, 3.0, 5.8, -1.2);
       ctx.stroke();
       /* 嘴角小窝 */
-      ctx.fillStyle = rgba(skin.mouth, 0.5);
-      ctx.beginPath(); ctx.arc(-5.8, -1.5, 0.55, 0, Math.PI * 2); ctx.fill();
-      ctx.beginPath(); ctx.arc(5.8, -1.5, 0.55, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = rgba(skin.mouth, 0.45);
+      ctx.beginPath(); ctx.arc(-6.0, -1.6, 0.55, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(6.0, -1.6, 0.55, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
       ctx.restore();
       return;
     }
 
     if (kind === 'wavy') {
+      ctx.save();
+      ctx.scale(ms, ms);
       ctx.strokeStyle = skin.mouth;
       ctx.lineWidth = 1.7;
       ctx.lineCap = 'round';
@@ -908,14 +1030,16 @@
       ctx.quadraticCurveTo(4.8, -2.2, 6.8, 1.0);
       ctx.stroke();
       ctx.restore();
+      ctx.restore();
       return;
     }
 
     if (kind === 'o') {
-      var pathName = 'o';
-      fillMouth(ctx, pathName, 'o', skin.mouth);
       ctx.save();
-      clipMouth(ctx, pathName, 'o');
+      ctx.scale(ms, ms);
+      fillMouth(ctx, 'o', 'o', skin.mouth);
+      ctx.save();
+      clipMouth(ctx, 'o', 'o');
       /* 舌 */
       ctx.fillStyle = mix(skin.cheek, skin.mouth, 0.32);
       ctx.beginPath();
@@ -925,41 +1049,41 @@
       ctx.fillRect(-4, -5, 8, 9);
       ctx.restore();
       ctx.restore();
+      ctx.restore();
       return;
     }
 
     /* laugh / grin：张嘴（同一嘴形，grin 缩小一圈） */
     var name = 'laugh';
-    var mscale = kind === 'grin' ? 0.64 : 1;
+    var mscale = (kind === 'grin' ? 0.64 : 1) * ms;
     ctx.scale(mscale, mscale);
 
-    var P = getPaths();
-    /* 口腔底色 */
-    fillMouth(ctx, name, kind, skin.mouth);
+    var i;
+    fillMouth(ctx, name, 'laugh', skin.mouth);
 
     /* 口腔内部（裁剪） */
     ctx.save();
-    clipMouth(ctx, name, kind);
+    clipMouth(ctx, name, 'laugh');
 
     /* 顶部深喉阴影 */
     ctx.fillStyle = G.throat;
     ctx.fillRect(-14, -9, 28, 19);
 
     /* 上牙：沿上唇的一排白牙 */
-    var teethH = 3.5;
-    var teethTop = -6.6;
+    var teethH = 3.6;
+    var teethTop = -6.5;
     ctx.fillStyle = skin.teeth;
     ctx.beginPath();
-    ctx.moveTo(-11.0, -3.0);
-    ctx.bezierCurveTo(-7.0, -6.4, 7.0, -6.4, 11.0, -3.0);
-    ctx.lineTo(10.0, -3.0 + teethH);
-    ctx.bezierCurveTo(6.6, -5.2 + teethH, -6.6, -5.2 + teethH, -10.0, -3.0 + teethH);
+    ctx.moveTo(-10.8, -3.0);
+    ctx.bezierCurveTo(-6.8, -6.4, 6.8, -6.4, 10.8, -3.0);
+    ctx.lineTo(9.8, -3.0 + teethH);
+    ctx.bezierCurveTo(6.4, -5.2 + teethH, -6.4, -5.2 + teethH, -9.8, -3.0 + teethH);
     ctx.closePath();
     ctx.fill();
     /* 牙齿缝隙 */
     ctx.strokeStyle = rgba(skin.mouth, 0.22);
     ctx.lineWidth = 0.55;
-    var xs = [-8.2, -5.4, -2.7, 0, 2.7, 5.4, 8.2];
+    var xs = [-8.0, -5.3, -2.7, 0, 2.7, 5.3, 8.0];
     for (i = 0; i < xs.length; i++) {
       var tx = xs[i];
       var ty = teethTop + Math.abs(tx) * 0.22;
@@ -972,32 +1096,32 @@
     ctx.strokeStyle = 'rgba(255,255,255,0.5)';
     ctx.lineWidth = 0.5;
     ctx.beginPath();
-    ctx.moveTo(-9.4, -3.0 + teethH + 0.7);
-    ctx.bezierCurveTo(-6.0, -5.0 + teethH + 0.7, 6.0, -5.0 + teethH + 0.7, 9.4, -3.0 + teethH + 0.7);
+    ctx.moveTo(-9.2, -3.0 + teethH + 0.7);
+    ctx.bezierCurveTo(-5.8, -5.0 + teethH + 0.7, 5.8, -5.0 + teethH + 0.7, 9.2, -3.0 + teethH + 0.7);
     ctx.stroke();
 
     /* 舌头 */
     var tongue = mix(skin.cheek, skin.mouth, 0.3);
     ctx.fillStyle = tongue;
     ctx.beginPath();
-    ctx.ellipse(0, 6.6, 5.6, 3.4, 0, 0, Math.PI * 2);
+    ctx.ellipse(0, 6.8, 5.6, 3.4, 0, 0, Math.PI * 2);
     ctx.fill();
     ctx.strokeStyle = rgba(darken(tongue, 0.18), 0.5);
     ctx.lineWidth = 0.6;
     ctx.beginPath();
-    ctx.moveTo(-4.4, 5.8);
-    ctx.quadraticCurveTo(0, 4.0, 4.4, 5.8);
+    ctx.moveTo(-4.4, 6.0);
+    ctx.quadraticCurveTo(0, 4.2, 4.4, 6.0);
     ctx.stroke();
     /* 舌头高光 */
     ctx.fillStyle = 'rgba(255,255,255,0.22)';
     ctx.beginPath();
-    ctx.ellipse(-1.4, 7.4, 2.0, 1.0, -0.2, 0, Math.PI * 2);
+    ctx.ellipse(-1.4, 7.6, 2.0, 1.0, -0.2, 0, Math.PI * 2);
     ctx.fill();
 
     /* 下颌暗影 */
     ctx.fillStyle = rgba(darken(skin.mouth, 0.25), 0.35);
     ctx.beginPath();
-    ctx.ellipse(0, 9.8, 9.0, 2.6, 0, 0, Math.PI * 2);
+    ctx.ellipse(0, 10.0, 9.2, 2.6, 0, 0, Math.PI * 2);
     ctx.fill();
     ctx.restore(); /* end mouth clip */
 
@@ -1005,17 +1129,17 @@
     ctx.strokeStyle = rgba(darken(skin.mouth, 0.15), 0.85);
     ctx.lineWidth = 0.9;
     ctx.lineJoin = 'round';
-    var P2 = getPaths();
-    if (P2 && P2[name]) ctx.stroke(P2[name]);
-    else { ctx.beginPath(); traceMouth(ctx, kind); ctx.stroke(); }
+    var P = getPaths();
+    if (P && P.laugh) ctx.stroke(P.laugh);
+    else { ctx.beginPath(); traceMouth(ctx, 'laugh'); ctx.stroke(); }
 
     /* 上唇高光 */
     ctx.strokeStyle = 'rgba(255,255,255,0.3)';
     ctx.lineWidth = 1.0;
     ctx.lineCap = 'round';
     ctx.beginPath();
-    ctx.moveTo(-8.6, 0.2);
-    ctx.quadraticCurveTo(0, 1.2, 8.6, 0.2);
+    ctx.moveTo(-8.4, 0.2);
+    ctx.quadraticCurveTo(0, 1.2, 8.4, 0.2);
     ctx.stroke();
 
     ctx.restore();
@@ -1023,49 +1147,37 @@
 
   /* ---- 脸部整体 ---- */
   function drawFace(ctx, skin, G, face, blink, p) {
-    var SH = sharedGrads(ctx);
+    var E = EXPR[face] || EXPR.smile;
     var i, side;
 
     ctx.save();
-    /* 仰头 / 摇头：以头部中心为轴 */
+    /* 仰头 / 低头：以头部中心为轴 */
     ctx.translate(0, p.faceY);
     if (p.faceTilt) {
-      ctx.translate(0, 14);
+      ctx.translate(0, 12);
       ctx.rotate(p.faceTilt);
-      ctx.translate(0, -14);
+      ctx.translate(0, -12);
     }
 
-    /* 腮红 */
+    /* 腮红（小、柔） */
     for (i = 0; i < 2; i++) {
       side = i === 0 ? -1 : 1;
       ctx.save();
-      ctx.translate(side * FACE.cheekX, FACE.cheekY);
-      ctx.scale(5.6, 3.9);
+      ctx.translate(side * FACE.cheekX, (E.mouthY || 16) + FACE.cheekDrop);
+      ctx.scale(5.0, 3.2);
       ctx.fillStyle = G.cheek;
       ctx.beginPath(); ctx.arc(0, 0, 1, 0, Math.PI * 2); ctx.fill();
       ctx.restore();
     }
 
-    var eyeStyle = 'open', mouthKind = 'smile', mouthOpen = 1;
-    switch (face) {
-      case 'laugh': eyeStyle = 'happyArc'; mouthKind = 'laugh'; break;
-      case 'run': eyeStyle = 'open'; mouthKind = 'grin'; break;
-      case 'happy': eyeStyle = 'happyArc'; mouthKind = 'grin'; break;
-      case 'wow': eyeStyle = 'wide'; mouthKind = 'o'; break;
-      case 'dizzy': eyeStyle = 'x'; mouthKind = 'wavy'; break;
-      case 'star': eyeStyle = 'star'; mouthKind = 'grin'; break;
-      default: eyeStyle = 'open'; mouthKind = 'smile'; break;
-    }
-
-    drawEyes(ctx, skin, G, eyeStyle, blink);
-    drawMouth(ctx, skin, G, mouthKind, mouthOpen);
+    drawEyes(ctx, skin, G, E, blink);
+    drawMouth(ctx, skin, G, E);
 
     ctx.restore();
   }
 
   /* ---- 升级光环 ---- */
   function drawAura(ctx, skin, G, t, strength) {
-    var SH = sharedGrads(ctx);
     ctx.save();
     ctx.translate(0, 46);
     ctx.scale(80, 80);
@@ -1089,7 +1201,7 @@
     ctx.restore();
   }
 
-  /* ---- 小装饰：跑动时的速度小尾迹 ---- */
+  /* ---- 跑动速度小尾迹 ---- */
   function drawRunTrails(ctx, skin, t) {
     ctx.save();
     ctx.lineCap = 'round';
@@ -1110,7 +1222,7 @@
   }
 
   /* ======================================================================
-   * 6. 对外 API
+   * 7. 对外 API
    * ==================================================================== */
   var SKIN_FALLBACK = {
     id: 'classic', body: '#FFC53D', bodyShade: '#F0A81F', bodyHi: '#FFE07A',
@@ -1138,9 +1250,9 @@
     var G = skinGrads(ctx, skin);
 
     var s = h / 100;
-    /* 受击挤压 + 果冻拉伸，都以脚底为基准 */
-    var sy = (1 - 0.26 * squash) * (1 + p.jelly);
-    var sx = (1 + 0.22 * squash) * (1 - p.jelly * 0.7);
+    /* 受击挤压 / 跳跃拉长 / 滑铲压低，都以脚底为基准 */
+    var sy = (1 - 0.26 * squash) * (1 + p.jelly) * p.stretchY;
+    var sx = (1 + 0.22 * squash) * (1 - p.jelly * 0.7) * p.stretchX;
 
     ctx.save();
     ctx.globalAlpha = ctx.globalAlpha * alpha;
@@ -1151,13 +1263,13 @@
     if (p.shake) ctx.translate(Math.sin(t * 54) * 1.6, 0);
 
     if (state === 'levelup') drawAura(ctx, skin, G, t, p.glow);
-    if (state === 'run') drawRunTrails(ctx, skin, t);
 
     ctx.translate(0, -p.bob);
 
     drawLegs(ctx, skin, G, t, p);
+    drawArmsBack(ctx, skin, G, t, p);
     drawBody(ctx, skin, G, t, p);
-    drawArms(ctx, skin, G, t, p);
+    drawArmsFront(ctx, skin, G, t, p);
     drawFace(ctx, skin, G, face, blink, p);
 
     ctx.restore();
@@ -1196,7 +1308,7 @@
     draw: drawCharacter,
     drawShadow: drawShadow,
     /* 便于调试 / 预览页使用 */
-    STATES: ['idle', 'run', 'laugh', 'hit', 'happy', 'levelup'],
-    FACES: ['laugh', 'smile', 'wow', 'dizzy', 'star']
+    STATES: ['idle', 'run', 'laugh', 'hit', 'happy', 'levelup', 'jump', 'slide'],
+    FACES: ['laugh', 'smile', 'wow', 'dizzy', 'star', 'jump', 'slide']
   };
 })(typeof window !== 'undefined' ? window : globalThis);
