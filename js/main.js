@@ -14,6 +14,7 @@
   var audioUnlocked = false;
   var params = {};
   var pointer = null;
+  var upgradeFocus = 0;          // v0.9.4：强化三选一键盘焦点
 
   /* ---------------- URL 参数 ---------------- */
   function parseQuery(search) {
@@ -134,7 +135,30 @@
   function onKeyDown(ev) {
     unlockAudio();
     var k = ev.key;
-    var playing = G.getStateName && G.getStateName() === 'playing';
+    var st = G.getStateName ? G.getStateName() : '';
+    /* v0.9.4：强化三选一期间独占键盘（1/2/3 或 ←→ + Enter） */
+    if (st === 'upgrade') {
+      var us = (G.getUpgradeState && G.getUpgradeState()) || { offers: null };
+      var offers = us.offers || [];
+      var n = offers.length;
+      if (upgradeFocus >= n) upgradeFocus = 0;
+      if (k === '1' || k === '2' || k === '3') {
+        var idx = parseInt(k, 10) - 1;
+        if (offers[idx]) G.pickUpgrade(offers[idx].id);
+        ev.preventDefault();
+      } else if (k === 'ArrowLeft' || k === 'a' || k === 'A') {
+        if (n) { upgradeFocus = (upgradeFocus + n - 1) % n; if (NW.ui && NW.ui.setUpgradeFocus) NW.ui.setUpgradeFocus(upgradeFocus); }
+        ev.preventDefault();
+      } else if (k === 'ArrowRight' || k === 'd' || k === 'D') {
+        if (n) { upgradeFocus = (upgradeFocus + 1) % n; if (NW.ui && NW.ui.setUpgradeFocus) NW.ui.setUpgradeFocus(upgradeFocus); }
+        ev.preventDefault();
+      } else if (k === 'Enter' || k === ' ') {
+        if (offers[upgradeFocus]) G.pickUpgrade(offers[upgradeFocus].id);
+        ev.preventDefault();
+      }
+      return;
+    }
+    var playing = st === 'playing';
     if (k === 'ArrowLeft' || k === 'a' || k === 'A') { laneInput(-1); ev.preventDefault(); }
     else if (k === 'ArrowRight' || k === 'd' || k === 'D') { laneInput(1); ev.preventDefault(); }
     else if (k === 'ArrowUp' || k === 'w' || k === 'W' || (k === ' ' && playing)) {
@@ -142,10 +166,9 @@
     }
     else if (k === 'ArrowDown' || k === 's' || k === 'S') { actionInput('slide'); ev.preventDefault(); }
     else if (k === 'Escape' || k === 'p' || k === 'P') {
-      var st = G.getStateName ? G.getStateName() : '';
       if (st === 'playing') G.pause();
       else if (st === 'paused') G.resume();
-    } else if ((k === 'Enter' || k === ' ') && G.getStateName && G.getStateName() === 'gameover') {
+    } else if ((k === 'Enter' || k === ' ') && st === 'gameover') {
       if (k === ' ') ev.preventDefault();
       if (G.debug && G.debug.start) G.debug.start(G.debug.getState().modeId || 'endless', { skipTutorial: true });
     }
