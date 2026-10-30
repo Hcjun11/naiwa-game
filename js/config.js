@@ -1,4 +1,4 @@
-/* ==========================================================================
+﻿/* ==========================================================================
  * 《奶娃》跑酷 × 2048 合成 —— 全局配置（唯一数值来源，任何模块不得硬编码数值）
  * 经典脚本：挂载到 window.NW.CFG，同时兼容 Node（globalThis.NW.CFG）
  * ========================================================================== */
@@ -278,7 +278,7 @@
   CFG.online = {
     enabled: true,
     server: 'https://ntfy.sh',
-    topic: 'naiwa-runner-online-2b9e5d',
+    topic: 'naiwa-runner-online-7f3d2c',
     since: '12h',
     pollMs: 8000,        // 排行榜打开时轮询间隔
     timeoutMs: 6000,
@@ -317,3 +317,4 @@
     return (lane - (CFG.world.lanes - 1) / 2) * CFG.world.laneW;
   };
 })(typeof window !== 'undefined' ? window : globalThis);
+
