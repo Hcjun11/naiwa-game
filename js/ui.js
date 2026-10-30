@@ -1,4 +1,4 @@
-﻿/* ==========================================================================
+/* ==========================================================================
  * 《奶娃》跑酷 × 2048 合成 —— UI 层（NW.ui）
  * 负责人：ui-shell
  * 职责：屏幕切换 / HUD 每帧增量更新（分数·距离·金币·心·道具·连击·最高方块·5 格合成槽）
@@ -8,6 +8,7 @@
  *   showBanner(title, sub, opts)  showGameOver(result)  showAd(kind, onDone)  toast(text)
  *   setCoins(n)  setPaused(bool)  refreshShop()  refreshLeaderboard(mode)  refreshSettings()
  *   setNicknameInput(name)  showTutorial(force)  hideTutorial()  onResize()  isOverlayOpen()  finishAd()
+ *   v0.9.4 Roguelike 强化：showUpgrade(offers, meta)  hideUpgrade()  setUpgradeFocus(i)  updateUpgradeHud(list)
  * 约定：UI 只读 NW.save；所有写操作通过 handlers 交给 game.js（handler 缺失时有只读/回退保护）。
  * ========================================================================== */
 (function (global) {
@@ -126,7 +127,11 @@
     shopTab: 'skin',
     boardMode: 'endless',
     autoTutorial: false,
-    firstMenuShown: false
+    firstMenuShown: false,
+    /* v0.9.4 强化三选一状态 */
+    upgradeOpen: false,
+    upgradeFocus: -1,
+    upgradeOffers: null
   };
 
   var hudEls = {
@@ -152,6 +157,16 @@
   var resetConfirmTimer = 0;
 
   var POWER_ICON = { shield: '盾', slow: '缓', magnet: '磁', double: '双' };
+
+  /* v0.9.4 强化图标（NW.core.Upgrades 池里的 icon token → UI 字形） */
+  var UPGRADE_ICON = {
+    tile: '数', merge: '合', combo: '连', coin: '金', magnet: '磁',
+    jump: '跳', slide: '滑', heart: '♥', shield: '盾', invuln: '无',
+    power: '道', luck: '运', revive: '复', cleanse: '净', star: '★'
+  };
+  var UPGRADE_RARITY_LABEL = { common: '普通', rare: '稀有', epic: '史诗' };
+  var UPGRADE_MAX_HUD = 6;        // HUD 强化图标行最多显示个数
+  var upgradeHudSig = '';         // HUD 强化图标行 diff 缓存
 
   /* 合成槽布局常量（必须与 css/style.css 中 .hud-rack / .rack-slot 保持一致） */
   var RACK = { left: 16, slotW: 92, gap: 12, slotH: 96, bottom: 16, headH: 28 };
@@ -233,6 +248,13 @@
     el.adTimer = $('ad-timer');
     el.adClaim = $('btn-ad-claim');
     el.adClaimText = $('ad-claim-text');
+
+    /* v0.9.4 强化三选一 + HUD 强化图标行 */
+    el.upgrade = $('overlay-upgrade');
+    el.upgradeTitle = $('upgrade-title');
+    el.upgradeSub = $('upgrade-sub');
+    el.upgradeCards = $('upgrade-cards');
+    el.hudUpgrades = $('hud-upgrades');
 
     el.countdownLayer = $('countdown-layer');
     el.bannerLayer = $('banner-layer');
@@ -474,6 +496,8 @@
     pending.comboPop = false; pending.heartHit = false; pending.badgePop = false; pending.badgeNew = false;
     clearHudFx();
     lastView = null;
+    /* 新一局开始时清空上一局强化图标行（game 层随后会用 updateUpgradeHud 回填） */
+    UI.updateUpgradeHud([]);
   }
 
   function clearHudFx() {
@@ -1109,8 +1133,192 @@
 
   UI.isOverlayOpen = function () {
     try {
-      return !!(state.tutorialOpen || adState.active);
+      return !!(state.tutorialOpen || adState.active || state.upgradeOpen);
     } catch (e) { return false; }
+  };
+
+  /* ======================== Roguelike 强化三选一（v0.9.4） ======================== */
+  function normRarity(r) {
+    return (r === 'rare' || r === 'epic') ? r : 'common';
+  }
+
+  /* 图标 token → UI 字形；也允许直接传图形字符（如验证用的 '★'） */
+  function upgradeGlyph(icon) {
+    if (icon === undefined || icon === null || icon === '') return '✦';
+    var key = String(icon);
+    if (UPGRADE_ICON[key]) return UPGRADE_ICON[key];
+    if (key.length <= 2) return key;
+    return key.charAt(0);
+  }
+
+  function upgradeCardHtml(offer, index) {
+    var o = offer || {};
+    var rarity = normRarity(o.rarity);
+    var rarityLabel = UPGRADE_RARITY_LABEL[rarity] || UPGRADE_RARITY_LABEL.common;
+    var level = Math.max(0, Math.floor(Number(o.level) || 0));
+    var maxLevel = Number(o.maxLevel);
+    var finiteMax = isFinite(maxLevel) && maxLevel > 0;
+    var pips = '';
+    if (finiteMax) {
+      var pipCount = Math.min(6, Math.max(1, Math.round(maxLevel)));
+      for (var p = 0; p < pipCount; p++) {
+        pips += '<i class="upgrade-pip' + (p < level ? ' is-on' : '') + '"></i>';
+      }
+    }
+    var lvText = 'Lv.' + level + (finiteMax ? ' / ' + Math.round(maxLevel) : '');
+    return '<button class="upgrade-card" type="button" data-rarity="' + rarity + '"' +
+      ' data-upgrade-index="' + index + '" data-upgrade-id="' + esc(o.id) + '">' +
+      '<span class="upgrade-card-top">' +
+      '<span class="upgrade-index">' + (index + 1) + '</span>' +
+      '<span class="upgrade-rare">' + rarityLabel + '</span>' +
+      '</span>' +
+      '<span class="upgrade-icon">' + esc(upgradeGlyph(o.icon)) + '</span>' +
+      '<span class="upgrade-name">' + esc(o.name || '未知强化') + '</span>' +
+      '<span class="upgrade-desc">' + esc(o.desc || '') + '</span>' +
+      '<span class="upgrade-level">' +
+      '<span class="upgrade-pips">' + pips + '</span>' +
+      '<span class="upgrade-lvtext">' + esc(lvText) + '</span>' +
+      '</span>' +
+      '<span class="upgrade-pick">选 择</span>' +
+      '</button>';
+  }
+
+  function renderUpgradeCards(offers) {
+    if (!el.upgradeCards) return;
+    var html = '';
+    for (var i = 0; i < offers.length; i++) html += upgradeCardHtml(offers[i], i);
+    setHtml(el.upgradeCards, html);
+  }
+
+  function upgradeCardFrom(node) {
+    while (node && node !== el.upgradeCards) {
+      if (node.nodeType === 1 && node.classList && node.classList.contains('upgrade-card')) return node;
+      node = node.parentNode;
+    }
+    return null;
+  }
+
+  /* 卡片点击 / 触摸 → handlers.onUpgradePick(id)（关帧/继续由 game 层决定） */
+  function pickUpgrade(card) {
+    if (!card || !state.upgradeOpen) return;
+    var idx = parseInt(card.getAttribute('data-upgrade-index'), 10);
+    if (isFinite(idx)) UI.setUpgradeFocus(idx);
+    var id = card.getAttribute('data-upgrade-id') || '';
+    sfx('tap');
+    if (hasHandler('onUpgradePick')) invoke('onUpgradePick', id);
+    else UI.toast('强化暂不可用');
+  }
+
+  /**
+   * 展示强化三选一遮罩
+   * @param {Array<{id,name,desc,rarity,icon,level,nextLevel,maxLevel}>} offers
+   * @param {{value:number,index:number,total:number,queue?:number}} meta
+   * @returns {boolean} 是否有可选项（空列表自动 hide 并返回 false）
+   */
+  UI.showUpgrade = function (offers, meta) {
+    try {
+      if (!el.upgrade) return false;
+      var list = [];
+      if (offers && offers.length) {
+        for (var i = 0; i < offers.length; i++) {
+          if (offers[i] && typeof offers[i] === 'object') list.push(offers[i]);
+        }
+      }
+      if (!list.length) { UI.hideUpgrade(); return false; }
+
+      meta = meta || {};
+      state.upgradeOpen = true;
+      state.upgradeOffers = list;
+      state.upgradeFocus = 0;
+
+      var value = meta.value;
+      setText(el.upgradeTitle, (value === undefined || value === null || value === '')
+        ? '选择强化'
+        : ('新数字 ' + value + '！选择强化'));
+      var idx = Math.max(1, Math.floor(Number(meta.index) || 1));
+      var total = Math.floor(Number(meta.total) || 0);
+      setText(el.upgradeSub, total > 0 ? ('第 ' + idx + '/' + total + ' 次强化') : ('第 ' + idx + ' 次强化'));
+
+      renderUpgradeCards(list);
+      el.upgrade.classList.add('is-open');
+      el.upgrade.setAttribute('aria-hidden', 'false');
+      UI.setUpgradeFocus(0);
+      return true;
+    } catch (e) { warn('showUpgrade', e); return false; }
+  };
+
+  UI.hideUpgrade = function () {
+    try {
+      state.upgradeOpen = false;
+      state.upgradeFocus = -1;
+      state.upgradeOffers = null;
+      if (el.upgrade) {
+        el.upgrade.classList.remove('is-open');
+        el.upgrade.setAttribute('aria-hidden', 'true');
+      }
+      var cards = el.upgradeCards ? qsa('.upgrade-card', el.upgradeCards) : [];
+      for (var i = 0; i < cards.length; i++) cards[i].classList.remove('is-focused');
+    } catch (e) { warn('hideUpgrade', e); }
+  };
+
+  /** 键盘 / 鼠标悬停共用：循环切换选中卡片（0..n-1） */
+  UI.setUpgradeFocus = function (i) {
+    try {
+      if (!state.upgradeOpen) return;
+      var n = state.upgradeOffers ? state.upgradeOffers.length : 0;
+      if (!n) return;
+      var idx = Math.round(Number(i));
+      if (!isFinite(idx)) idx = 0;
+      idx = ((idx % n) + n) % n;
+      state.upgradeFocus = idx;
+      var cards = el.upgradeCards ? qsa('.upgrade-card', el.upgradeCards) : [];
+      for (var k = 0; k < cards.length; k++) cards[k].classList.toggle('is-focused', k === idx);
+    } catch (e) { warn('setUpgradeFocus', e); }
+  };
+
+  /**
+   * 游戏 HUD 内的强化图标行（最多 6 个 + 「+N」溢出；空列表隐藏）
+   * @param {Array<{id,name,icon,level,maxLevel,rarity}>} list
+   */
+  UI.updateUpgradeHud = function (list) {
+    try {
+      if (!el.hudUpgrades) return;
+      var items = [];
+      if (list && list.length) {
+        for (var i = 0; i < list.length; i++) if (list[i]) items.push(list[i]);
+      }
+      var sig = '';
+      for (var j = 0; j < items.length; j++) {
+        var it = items[j];
+        sig += (it.id || '') + ':' + (Number(it.level) || 0) + ':' + normRarity(it.rarity) + '|';
+      }
+      if (sig === upgradeHudSig) return;
+      upgradeHudSig = sig;
+
+      if (!items.length) {
+        el.hudUpgrades.hidden = true;
+        if (el.hudUpgrades.innerHTML !== '') el.hudUpgrades.innerHTML = '';
+        return;
+      }
+
+      var html = '';
+      var shown = Math.min(UPGRADE_MAX_HUD, items.length);
+      for (var s = 0; s < shown; s++) {
+        var it2 = items[s];
+        var lv = Math.max(0, Math.floor(Number(it2.level) || 0));
+        html += '<span class="hud-up-chip" data-rarity="' + normRarity(it2.rarity) + '" title="' +
+          esc((it2.name || '强化') + (lv > 0 ? ' Lv.' + lv : '')) + '">' +
+          '<span class="hud-up-ico">' + esc(upgradeGlyph(it2.icon)) + '</span>' +
+          (lv > 0 ? '<i class="hud-up-lv">' + (lv > 9 ? '9+' : lv) + '</i>' : '') +
+          '</span>';
+      }
+      var extra = items.length - UPGRADE_MAX_HUD;
+      if (extra > 0) {
+        html += '<span class="hud-up-chip hud-up-chip--more">+' + extra + '</span>';
+      }
+      el.hudUpgrades.innerHTML = html;
+      el.hudUpgrades.hidden = false;
+    } catch (e) { warn('updateUpgradeHud', e); }
   };
 
   /* ======================== 商店 ======================== */
@@ -1416,7 +1624,7 @@
       }
       setText(el.settingsCoins, fmt(snap.coins || 0));
       if (el.setVersion) {
-        setText(el.setVersion, '《奶娃》 v' + (CFG.version || '0.9.3-demo') + ' · 在线排行榜 · 本地存档');
+        setText(el.setVersion, '《奶娃》 v' + (CFG.version || '0.9.4-demo') + ' · 在线排行榜 · 本地存档');
       }
       updateCoinDisplays();
     } catch (e) { warn('refreshSettings', e); }
@@ -1638,6 +1846,7 @@
         if (hasAttr(node, 'data-mode')) { switchBoardMode(node.getAttribute('data-mode')); return; }
         if (hasAttr(node, 'data-setting')) { toggleSetting(node); return; }
         if (hasAttr(node, 'data-act')) { onShopAction(node); return; }
+        if (hasAttr(node, 'data-upgrade-id')) { pickUpgrade(node); return; }
         if (node.tagName === 'BUTTON' || node.tagName === 'INPUT') {
           /* 未绑定具体事件的按钮：只给点击音效 */
           if (node.tagName === 'BUTTON' && !node.disabled) sfx('tap');
@@ -1676,6 +1885,22 @@
     try {
       if (global.visualViewport) global.visualViewport.addEventListener('resize', applyScale);
     } catch (e) { }
+
+    /* 强化三选一：键盘焦点由 main.js 控制，鼠标悬停/触摸切换同一焦点 */
+    if (el.upgradeCards) {
+      el.upgradeCards.addEventListener('mouseover', function (e) {
+        var card = upgradeCardFrom(e.target);
+        if (!card || !state.upgradeOpen) return;
+        var idx = parseInt(card.getAttribute('data-upgrade-index'), 10);
+        if (isFinite(idx)) UI.setUpgradeFocus(idx);
+      });
+      el.upgradeCards.addEventListener('touchstart', function (e) {
+        var card = upgradeCardFrom(e.target);
+        if (!card || !state.upgradeOpen) return;
+        var idx = parseInt(card.getAttribute('data-upgrade-index'), 10);
+        if (isFinite(idx)) UI.setUpgradeFocus(idx);
+      }, { passive: true });
+    }
   }
 
   UI.init = function (h) {
@@ -1694,7 +1919,9 @@
       UI.refreshShop();
       UI.refreshLeaderboard('endless');
       UI.refreshSettings();
-      setText(el.bootVersion, 'v' + (CFG.version || '0.9.3-demo'));
+      UI.updateUpgradeHud([]);
+      UI.hideUpgrade();
+      setText(el.bootVersion, 'v' + (CFG.version || '0.9.4-demo'));
       state.inited = true;
       if (S && S.load) { try { S.load(); } catch (e) { } }
       renderSplashTiles();
@@ -1734,7 +1961,15 @@
     hudCache: hudCache,
     refreshMenu: refreshMenu,
     clearCountdown: clearCountdown,
-    adState: function () { return adState; }
+    adState: function () { return adState; },
+    upgradeState: function () {
+      return {
+        open: state.upgradeOpen,
+        focus: state.upgradeFocus,
+        offers: state.upgradeOffers
+      };
+    },
+    getHandlers: function () { return handlers; }
   };
 
 })(typeof window !== 'undefined' ? window : globalThis);
