@@ -686,15 +686,16 @@
     var jumpY = (v.player.y || 0);
     if (NW.art.Character) {
       var shadowScale = Math.max(0.45, 1 - jumpY * 0.55);
-      if (NW.art.Character.drawShadow) NW.art.Character.drawShadow(ctx, ps.x, ps.groundY, ps.h * 0.32 * shadowScale, 0.22 * shadowScale);
+      if (NW.art.Character.drawShadow) NW.art.Character.drawShadow(ctx, ps.x, ps.groundY, ps.h * 0.32 * shadowScale, 0.22 * shadowScale, jumpY);
       var chState = 'run';
       if (v.player.hurt > 0.05) chState = 'hit';
       else if (v.player.rolling) chState = 'slide';
       else if (v.player.jumping) chState = 'jump';
       else if (v.combo >= 3) chState = 'happy';
+      var chYaw = U.clamp((v.player.tilt || 0) * (CFG.run.playerYaw || 1.7), -0.4, 0.4);
       var chOpts = {
         x: ps.x, y: ps.y, h: ps.h, state: chState, t: gameTime,
-        skin: skin, lean: v.player.tilt || 0, alpha: alpha,
+        skin: skin, lean: v.player.tilt || 0, yaw: chYaw, alpha: alpha,
         squash: v.player.hurt > 0 ? Math.min(0.5, v.player.hurt) : 0
       };
       if (chState === 'run' && v.mode.phase === 'intro') chOpts.state = 'idle';
