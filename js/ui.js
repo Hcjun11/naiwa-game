@@ -1416,7 +1416,7 @@
       }
       setText(el.settingsCoins, fmt(snap.coins || 0));
       if (el.setVersion) {
-        setText(el.setVersion, '《奶娃》 v' + (CFG.version || '0.9.2-demo') + ' · 在线排行榜 · 本地存档');
+        setText(el.setVersion, '《奶娃》 v' + (CFG.version || '0.9.3-demo') + ' · 在线排行榜 · 本地存档');
       }
       updateCoinDisplays();
     } catch (e) { warn('refreshSettings', e); }
@@ -1694,7 +1694,7 @@
       UI.refreshShop();
       UI.refreshLeaderboard('endless');
       UI.refreshSettings();
-      setText(el.bootVersion, 'v' + (CFG.version || '0.9.0-demo'));
+      setText(el.bootVersion, 'v' + (CFG.version || '0.9.3-demo'));
       state.inited = true;
       if (S && S.load) { try { S.load(); } catch (e) { } }
       renderSplashTiles();
@@ -1738,4 +1738,6 @@
   };
 
 })(typeof window !== 'undefined' ? window : globalThis);
+
+
 
