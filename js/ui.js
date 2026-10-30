@@ -1,4 +1,4 @@
-/* ==========================================================================
+﻿/* ==========================================================================
  * 《奶娃》跑酷 × 2048 合成 —— UI 层（NW.ui）
  * 负责人：ui-shell
  * 职责：屏幕切换 / HUD 每帧增量更新（分数·距离·金币·心·道具·连击·最高方块·5 格合成槽）
@@ -1416,7 +1416,7 @@
       }
       setText(el.settingsCoins, fmt(snap.coins || 0));
       if (el.setVersion) {
-        setText(el.setVersion, '《奶娃》 v' + (CFG.version || '0.9.1-demo') + ' · 在线排行榜 · 本地存档');
+        setText(el.setVersion, '《奶娃》 v' + (CFG.version || '0.9.2-demo') + ' · 在线排行榜 · 本地存档');
       }
       updateCoinDisplays();
     } catch (e) { warn('refreshSettings', e); }
@@ -1738,3 +1738,4 @@
   };
 
 })(typeof window !== 'undefined' ? window : globalThis);
+
